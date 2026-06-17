@@ -1,0 +1,18 @@
+# 全局设置
+exchange: "okx"
+symbol: "ETH-USDT-SWAP"  # 换成 OKX 原生的永续合约名
+timeframe: "1H"
+timezone: "UTC+8"
+fee_rate: 0.0005
+
+# 交易执行通用配置
+execution:
+  td_mode: "cross"  # 交易模式: cross(全仓) 或 isolated(逐仓)
+  default_leverage: 20  # 默认杠杆倍数
+
+# 合约面值映射 (1张合约等于多少个币)
+contract_values:
+  ETH-USDT-SWAP: 0.1
+  BTC-USDT-SWAP: 0.01
+  SOL-USDT-SWAP: 1.0
+  DOGE-USDT-SWAP: 100.0
