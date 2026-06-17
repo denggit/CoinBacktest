@@ -38,6 +38,11 @@ if PROJECT_ROOT not in sys.path:
 
 from src.data_feed.okx_tick_loader import OKXTickLoader  # noqa: E402
 from src.utils.report import print_full_report  # noqa: E402
+from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
+from src.backtest_common.data import aggregate_trades_to_seconds, load_second_bars, merge_second_bars  # noqa: E402
+from src.backtest_common.indicators import rolling_quantile_shifted, rolling_sum  # noqa: E402
+from src.backtest_common.reporting import summarize_hf_trades as summarize  # noqa: E402
+from src.backtest_common.reporting import emit_hf_platform_report, print_hf_summary, write_hf_outputs  # noqa: E402
 
 DEFAULT_OKX_TRADES_URL_TEMPLATE = "https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip"
 
@@ -71,120 +76,6 @@ class StrategyConfig:
     no_progress_min_mfe_pct: float = 0.0010
     max_hold_seconds: int = 480
 
-
-def _ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "timestamp" in out.columns:
-        ts = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
-    elif "ts_ms" in out.columns:
-        ts = pd.to_datetime(pd.to_numeric(out["ts_ms"], errors="coerce"), unit="ms", utc=True, errors="coerce")
-    else:
-        raise RuntimeError("tick chunk missing timestamp/ts_ms")
-    out = out.loc[ts.notna()].copy()
-    out.index = ts.loc[ts.notna()]
-    return out.sort_index()
-
-
-def aggregate_trades_to_seconds(chunk: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
-    if chunk.empty:
-        return pd.DataFrame()
-    df = _ensure_utc_index(chunk)
-    for col in ["price", "size"]:
-        if col not in df.columns:
-            raise RuntimeError(f"tick chunk missing column: {col}")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "side" not in df.columns:
-        raise RuntimeError("tick chunk missing column: side")
-
-    df = df.dropna(subset=["price", "size"])
-    if df.empty:
-        return pd.DataFrame()
-
-    side = df["side"].astype(str).str.lower()
-    notional = df["price"] * df["size"] * cfg.contract_value
-    df["buy_notional"] = notional.where(side == "buy", 0.0)
-    df["sell_notional"] = notional.where(side == "sell", 0.0)
-    df["buy_contracts"] = df["size"].where(side == "buy", 0.0)
-    df["sell_contracts"] = df["size"].where(side == "sell", 0.0)
-    df["notional"] = notional
-    df["trades_count"] = 1
-
-    rule = f"{int(cfg.bar_seconds)}s"
-    bars = df.resample(rule).agg(
-        open=("price", "first"),
-        high=("price", "max"),
-        low=("price", "min"),
-        close=("price", "last"),
-        buy_notional=("buy_notional", "sum"),
-        sell_notional=("sell_notional", "sum"),
-        buy_contracts=("buy_contracts", "sum"),
-        sell_contracts=("sell_contracts", "sum"),
-        volume_notional=("notional", "sum"),
-        trades_count=("trades_count", "sum"),
-    )
-    return bars.dropna(subset=["open", "high", "low", "close"])
-
-
-def merge_second_bars(parts: list[pd.DataFrame]) -> pd.DataFrame:
-    if not parts:
-        return pd.DataFrame()
-    raw = pd.concat(parts).sort_index()
-    merged = raw.groupby(level=0).agg(
-        open=("open", "first"),
-        high=("high", "max"),
-        low=("low", "min"),
-        close=("close", "last"),
-        buy_notional=("buy_notional", "sum"),
-        sell_notional=("sell_notional", "sum"),
-        buy_contracts=("buy_contracts", "sum"),
-        sell_contracts=("sell_contracts", "sum"),
-        volume_notional=("volume_notional", "sum"),
-        trades_count=("trades_count", "sum"),
-    )
-    if merged.empty:
-        return merged
-    full_index = pd.date_range(merged.index.min(), merged.index.max(), freq="1s", tz="UTC")
-    merged = merged.reindex(full_index)
-    merged["close"] = merged["close"].ffill()
-    for col in ["open", "high", "low"]:
-        merged[col] = merged[col].fillna(merged["close"])
-    for col in ["buy_notional", "sell_notional", "buy_contracts", "sell_contracts", "volume_notional", "trades_count"]:
-        merged[col] = merged[col].fillna(0.0)
-    merged["cvd_notional"] = merged["buy_notional"] - merged["sell_notional"]
-    merged["signed_contracts"] = merged["buy_contracts"] - merged["sell_contracts"]
-    return merged.dropna(subset=["open", "high", "low", "close"])
-
-
-def load_second_bars(
-    symbol: str,
-    start_date: str,
-    end_date: str,
-    cfg: StrategyConfig,
-    *,
-    chunksize: int,
-    trades_url_template: str,
-    data_dir: str | None,
-) -> pd.DataFrame:
-    loader = OKXTickLoader(symbol=symbol, data_dir=data_dir, trades_url_template=trades_url_template)
-    parts: list[pd.DataFrame] = []
-    for day, chunk in loader.iter_trades(start_date, end_date, chunksize=chunksize):
-        bars = aggregate_trades_to_seconds(chunk, cfg)
-        if not bars.empty:
-            parts.append(bars)
-        print(f"loaded tick chunk day={day} rows={len(chunk)} bars={len(bars)}")
-        del chunk, bars
-    out = merge_second_bars(parts)
-    if out.empty:
-        raise RuntimeError(f"No tick data loaded for {symbol} {start_date} -> {end_date}")
-    return out
-
-
-def rolling_sum(s: pd.Series, seconds: int) -> pd.Series:
-    return s.rolling(int(seconds), min_periods=max(1, int(seconds))).sum()
-
-
-def rolling_quantile_shifted(s: pd.Series, seconds: int, q: float) -> pd.Series:
-    return s.rolling(int(seconds), min_periods=max(10, int(seconds) // 3)).quantile(q).shift(1)
 
 
 def build_features(bars: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
@@ -266,13 +157,6 @@ def build_features(bars: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     return df.dropna(subset=["open", "high", "low", "close"]).copy()
 
 
-
-def apply_entry_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 + slippage_pct) if side == 1 else price * (1 - slippage_pct)
-
-
-def apply_exit_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 - slippage_pct) if side == 1 else price * (1 + slippage_pct)
 
 
 def run_backtest(features: pd.DataFrame, cfg: StrategyConfig) -> tuple[list[dict[str, Any]], pd.DataFrame]:
@@ -458,87 +342,6 @@ def run_backtest(features: pd.DataFrame, cfg: StrategyConfig) -> tuple[list[dict
     return trades, equity
 
 
-def summarize(trades: list[dict[str, Any]], equity: pd.DataFrame, initial_capital: float, signal_count: int) -> dict[str, Any]:
-    if not trades:
-        return {"signal_count": int(signal_count), "total_trades": 0, "final_capital": round(initial_capital, 4), "total_return_pct": 0.0}
-    tdf = pd.DataFrame(trades)
-    wins = tdf[tdf["pnl"] > 0]
-    losses = tdf[tdf["pnl"] <= 0]
-    gross_profit = float(wins["pnl"].sum()) if not wins.empty else 0.0
-    gross_loss = float(-losses["pnl"].sum()) if not losses.empty else 0.0
-    final_capital = float(tdf.iloc[-1]["capital"])
-    pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-    total_fee = float(tdf["fee"].sum())
-    return {
-        "signal_count": int(signal_count),
-        "total_trades": int(len(tdf)),
-        "long_trades": int((tdf["type"] == "LONG").sum()),
-        "short_trades": int((tdf["type"] == "SHORT").sum()),
-        "final_capital": round(final_capital, 4),
-        "total_return_pct": round((final_capital / initial_capital - 1) * 100, 4),
-        "win_rate": round(float((tdf["pnl"] > 0).mean() * 100), 4),
-        "gross_profit": round(gross_profit, 4),
-        "gross_loss": round(gross_loss, 4),
-        "profit_factor": round(pf, 4) if math.isfinite(pf) else "inf",
-        "expectancy_pct": round(float(tdf["return_pct"].mean() * 100), 6),
-        "max_drawdown_pct": round(float(equity["drawdown_pct"].max() * 100), 4) if not equity.empty else 0.0,
-        "avg_mfe_pct": round(float(tdf["mfe_pct"].mean() * 100), 4),
-        "avg_mae_pct": round(float(tdf["mae_pct"].mean() * 100), 4),
-        "avg_holding_seconds": round(float(tdf["holding_seconds"].mean()), 2),
-        "total_fees": round(total_fee, 4),
-        "fee_to_gross_profit_pct": round(total_fee / gross_profit * 100, 4) if gross_profit > 0 else None,
-    }
-
-
-def write_outputs(features: pd.DataFrame, trades: list[dict[str, Any]], equity: pd.DataFrame, summary: dict[str, Any], out_dir: Path, *, write_full_audit: bool) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(trades).to_csv(out_dir / f"{STRATEGY_NAME}_trades.csv", index=False)
-    if not equity.empty:
-        equity.to_csv(out_dir / f"{STRATEGY_NAME}_equity.csv")
-
-    audit_cols = [
-        "open", "high", "low", "close", "buy_notional", "sell_notional", "volume_notional", "cvd_notional",
-        "signal", "signal_reason", "signal_level", "signal_extreme", "local_low", "local_high",
-        "sell_notional_3s", "buy_notional_3s", "cvd_5s", "buy_ratio_5s", "sell_ratio_5s",
-        "range_high", "range_low", "range_pct", "compression_ok", "cvd_10s",
-    ]
-    signal_rows = features[features["signal"] != 0].copy()
-    signal_rows[[c for c in audit_cols if c in signal_rows.columns]].to_csv(out_dir / f"{STRATEGY_NAME}_signal_audit.csv")
-    if write_full_audit:
-        features[[c for c in audit_cols if c in features.columns]].to_csv(out_dir / f"{STRATEGY_NAME}_full_audit.csv")
-
-    with (out_dir / f"{STRATEGY_NAME}_summary.json").open("w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
-
-
-def emit_platform_report(trades: list[dict[str, Any]], features: pd.DataFrame, cfg: StrategyConfig, out_dir) -> None:
-    """使用项目统一报告模块输出深度量化报告。"""
-    if features.empty:
-        return
-    final_capital = float(trades[-1]["capital"]) if trades else float(cfg.initial_capital)
-    total_days = max((features.index[-1] - features.index[0]).total_seconds() / 86400.0, 1.0 / 86400.0)
-    print_full_report(
-        trade_history=trades,
-        df=features,
-        initial_capital=cfg.initial_capital,
-        capital=final_capital,
-        strategy_name=STRATEGY_NAME,
-        total_days=total_days,
-        ai_enabled=False,
-        symbol=cfg.symbol,
-        report_dir=out_dir,
-    )
-
-
-def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
-    print("\n" + "=" * 88)
-    print(f"ETH HF Backtest Summary | {STRATEGY_NAME}")
-    print("=" * 88)
-    for k, v in summary.items():
-        print(f"{k:>28}: {v}")
-    print("-" * 88)
-    print(f"Output directory: {out_dir.resolve()}")
-    print("=" * 88 + "\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -599,9 +402,9 @@ def main() -> int:
     trades, equity = run_backtest(features, cfg)
     summary = summarize(trades, equity, cfg.initial_capital, signal_count)
     out_dir = Path(PROJECT_ROOT) / args.out_dir
-    emit_platform_report(trades, features, cfg, out_dir)
-    write_outputs(features, trades, equity, summary, out_dir, write_full_audit=args.write_full_audit)
-    print_summary(summary, out_dir)
+    emit_hf_platform_report(trades, features, cfg, out_dir, strategy_name=STRATEGY_NAME)
+    write_hf_outputs(features, trades, equity, summary, out_dir, write_full_audit=args.write_full_audit, strategy_name=STRATEGY_NAME)
+    print_hf_summary(summary, out_dir, strategy_name=STRATEGY_NAME)
     return 0
 
 

@@ -44,6 +44,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_feed.okx_loader import OKXDataLoader  # noqa: E402
 from src.utils.report import print_full_report  # noqa: E402
+from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
+from src.backtest_common.indicators import adx, atr, ema, resample_ohlcv, rsi  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -95,68 +97,6 @@ class StrategyConfig:
     fee_rate: float = 0.0005            # taker fee per side by default
     slippage_pct: float = 0.0002        # per entry/exit
 
-
-def ema(s: pd.Series, span: int) -> pd.Series:
-    return s.ewm(span=span, adjust=False, min_periods=span).mean()
-
-
-def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-
-
-def rsi(close: pd.Series, length: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-    avg_gain = gain.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-    avg_loss = loss.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    return (100 - 100 / (1 + rs)).fillna(50.0)
-
-
-def adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
-    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
-
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr_w = tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-    plus_di = 100 * plus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean() / atr_w
-    minus_di = 100 * minus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean() / atr_w
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)
-    return dx.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-
-
-def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    out = df.resample(rule, label="left", closed="left").agg(
-        open=("open", "first"),
-        high=("high", "max"),
-        low=("low", "min"),
-        close=("close", "last"),
-        volume=("volume", "sum"),
-    )
-    return out.dropna()
 
 
 def load_base_data(symbol: str, start_date: str, end_date: str, timeframe: str = "15m") -> pd.DataFrame:
@@ -240,13 +180,6 @@ def build_features(base_15m: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     df.loc[df["short_signal"], "signal"] = -1
     return df.dropna().copy()
 
-
-def apply_entry_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 + slippage_pct) if side == 1 else price * (1 - slippage_pct)
-
-
-def apply_exit_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 - slippage_pct) if side == 1 else price * (1 + slippage_pct)
 
 
 def build_initial_stop(df: pd.DataFrame, i: int, entry_price: float, side: int, cfg: StrategyConfig) -> tuple[float, float, str]:

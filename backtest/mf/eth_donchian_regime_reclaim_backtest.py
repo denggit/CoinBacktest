@@ -47,6 +47,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_feed.okx_loader import OKXDataLoader  # noqa: E402
 from src.utils.report import print_full_report  # noqa: E402
+from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
+from src.backtest_common.indicators import atr, resample_ohlcv  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -88,29 +90,6 @@ class StrategyConfig:
     # Cooldown
     same_side_cooldown_bars: int = 6          # 30m same-side cooldown after SL
 
-
-def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-
-
-def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    out = df.resample(rule, label="left", closed="left").agg(
-        open=("open", "first"),
-        high=("high", "max"),
-        low=("low", "min"),
-        close=("close", "last"),
-        volume=("volume", "sum"),
-    )
-    return out.dropna()
 
 
 def load_base_data(symbol: str, start_date: str, end_date: str, timeframe: str = "5m") -> pd.DataFrame:
@@ -197,13 +176,6 @@ def build_features(base_5m: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     df.loc[df["short_reclaim_signal"], "signal"] = -1
     return df.dropna().copy()
 
-
-def apply_entry_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 + slippage_pct) if side == 1 else price * (1 - slippage_pct)
-
-
-def apply_exit_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 - slippage_pct) if side == 1 else price * (1 + slippage_pct)
 
 
 def build_initial_stop(df: pd.DataFrame, i: int, entry_price: float, side: int, cfg: StrategyConfig) -> tuple[float, float, str]:

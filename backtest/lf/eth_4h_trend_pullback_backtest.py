@@ -43,6 +43,11 @@ if PROJECT_ROOT not in sys.path:
 
 from src.data_feed.okx_loader import OKXDataLoader  # noqa: E402
 from src.utils.report import print_full_report  # noqa: E402
+from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
+from src.backtest_common.indicators import adx, atr  # noqa: E402
+from src.backtest_common.data import load_ohlcv_data as load_data  # noqa: E402
+from src.backtest_common.reporting import build_report_trades  # noqa: E402
+from src.backtest_common.reporting import summarize_r_trades as summarize  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -78,55 +83,6 @@ class StrategyConfig:
     fee_rate: float = 0.0005
     slippage_pct: float = 0.0002
 
-
-def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-
-
-def adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
-    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr_w = tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-    plus_di = 100 * plus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean() / atr_w
-    minus_di = 100 * minus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean() / atr_w
-    dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)) * 100
-    return dx.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
-
-
-def load_data(symbol: str, start_date: str, end_date: str, timeframe: str) -> pd.DataFrame:
-    loader = OKXDataLoader(symbol=symbol, timeframe=timeframe)
-    df = loader.fetch_data_by_date_range(start_date, end_date)
-    if df.empty:
-        raise RuntimeError(f"No data loaded for {symbol} {timeframe} {start_date} -> {end_date}")
-    df = df.sort_index().copy()
-    for col in ["open", "high", "low", "close", "volume"]:
-        if col not in df.columns:
-            raise RuntimeError(f"Missing column: {col}")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["open", "high", "low", "close", "volume"])
 
 
 def build_features(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
@@ -174,13 +130,6 @@ def build_features(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out.loc[out["short_signal"], "signal"] = -1
     return out.dropna().copy()
 
-
-def apply_entry_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 + slippage_pct) if side == 1 else price * (1 - slippage_pct)
-
-
-def apply_exit_slippage(price: float, side: int, slippage_pct: float) -> float:
-    return price * (1 - slippage_pct) if side == 1 else price * (1 + slippage_pct)
 
 
 def initial_stop(row: Any, entry_price: float, side: int, cfg: StrategyConfig) -> float:
@@ -370,34 +319,6 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[list[dict[str, 
     return trades, equity
 
 
-def summarize(trades: list[dict[str, Any]], equity: pd.DataFrame, initial_capital: float) -> dict[str, Any]:
-    if not trades:
-        return {"total_trades": 0, "final_capital": initial_capital, "total_return_pct": 0.0}
-    tdf = pd.DataFrame(trades)
-    wins = tdf[tdf["pnl"] > 0]
-    losses = tdf[tdf["pnl"] <= 0]
-    gross_profit = float(wins["pnl"].sum()) if not wins.empty else 0.0
-    gross_loss = float(-losses["pnl"].sum()) if not losses.empty else 0.0
-    final_capital = float(tdf.iloc[-1]["capital"])
-    pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-    return {
-        "total_trades": int(len(tdf)),
-        "long_trades": int((tdf["type"] == "LONG").sum()),
-        "short_trades": int((tdf["type"] == "SHORT").sum()),
-        "final_capital": round(final_capital, 4),
-        "total_return_pct": round((final_capital / initial_capital - 1) * 100, 4),
-        "win_rate": round(float((tdf["pnl"] > 0).mean() * 100), 4),
-        "gross_profit": round(gross_profit, 4),
-        "gross_loss": round(gross_loss, 4),
-        "profit_factor": round(pf, 4) if math.isfinite(pf) else "inf",
-        "expectancy_pct": round(float(tdf["return_pct"].mean() * 100), 6),
-        "max_drawdown_pct": round(float(equity["drawdown_pct"].max() * 100), 4) if not equity.empty else 0.0,
-        "avg_mfe_r": round(float(tdf["mfe_r"].mean()), 4),
-        "avg_mae_r": round(float(tdf["mae_r"].mean()), 4),
-        "avg_holding_hours": round(float(tdf["holding_hours"].mean()), 2),
-        "total_fees": round(float(tdf["fee"].sum()), 4),
-    }
-
 
 def write_outputs(trades: list[dict[str, Any]], equity: pd.DataFrame, features: pd.DataFrame, summary: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -424,19 +345,6 @@ def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
 
 
 
-
-def build_report_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert internal trade records into the format expected by src.utils.report."""
-    report_trades: list[dict[str, Any]] = []
-    for trade in trades:
-        item = dict(trade)
-        # print_full_report expects entry/exit keys. Pyramiding strategy uses avg_entry/first_entry internally.
-        if "entry" not in item:
-            item["entry"] = item.get("avg_entry", item.get("first_entry", 0.0))
-        if "exit" not in item:
-            item["exit"] = item.get("exit_price", 0.0)
-        report_trades.append(item)
-    return report_trades
 
 
 def print_deep_report(trades: list[dict[str, Any]], features: pd.DataFrame, cfg: StrategyConfig, out_dir) -> None:
