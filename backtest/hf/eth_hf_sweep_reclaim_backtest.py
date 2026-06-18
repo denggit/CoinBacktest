@@ -36,11 +36,9 @@ PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.data_feed.okx_tick_loader import OKXTickLoader  # noqa: E402
-from src.utils.report import print_full_report  # noqa: E402
 from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
-from src.backtest_common.data import aggregate_trades_to_seconds, load_second_bars, merge_second_bars  # noqa: E402
 from src.backtest_common.indicators import rolling_quantile_shifted, rolling_sum  # noqa: E402
+from src.backtest_common.hf_streaming import HFBacktestState, iter_second_bar_windows_by_day  # noqa: E402
 from src.backtest_common.reporting import summarize_hf_trades as summarize  # noqa: E402
 from src.backtest_common.reporting import emit_hf_platform_report, print_hf_summary, write_hf_outputs  # noqa: E402
 
@@ -159,189 +157,192 @@ def build_features(bars: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
 
 
 
-def run_backtest(features: pd.DataFrame, cfg: StrategyConfig) -> tuple[list[dict[str, Any]], pd.DataFrame]:
-    capital = cfg.initial_capital
-    peak = capital
-    trades: list[dict[str, Any]] = []
-    equity_rows: list[dict[str, Any]] = []
 
-    in_pos = False
-    side = 0
-    entry_i = -1
-    entry_time = None
-    entry_price = 0.0
-    stop_price = 0.0
-    target_price = 0.0
-    qty_eth = 0.0
-    entry_fee = 0.0
-    max_fav = 0.0
-    max_adv = 0.0
-    last_exit_i = -10**9
+def _elapsed_seconds(start: Any, end: Any) -> int:
+    if start is None or end is None:
+        return 0
+    return max(0, int((pd.Timestamp(end) - pd.Timestamp(start)).total_seconds()))
 
+
+def _cooldown_ok(state: HFBacktestState, ts: pd.Timestamp, cfg: StrategyConfig) -> bool:
+    if state.last_exit_time is None:
+        return True
+    return _elapsed_seconds(state.last_exit_time, ts) >= int(cfg.cooldown_seconds)
+
+
+def _close_position(state: HFBacktestState, ts: pd.Timestamp, exit_price: float, reason: str, cfg: StrategyConfig) -> None:
+    exit_fee = state.qty_eth * exit_price * cfg.taker_fee_rate
+    if state.side == 1:
+        pnl = (exit_price - state.entry_price) * state.qty_eth - state.entry_fee - exit_fee
+        mfe_pct = (state.max_fav - state.entry_price) / state.entry_price
+        mae_pct = (state.entry_price - state.max_adv) / state.entry_price
+    else:
+        pnl = (state.entry_price - exit_price) * state.qty_eth - state.entry_fee - exit_fee
+        mfe_pct = (state.entry_price - state.max_fav) / state.entry_price
+        mae_pct = (state.max_adv - state.entry_price) / state.entry_price
+
+    cap_before = state.capital
+    state.capital += pnl
+    state.peak = max(state.peak, state.capital)
+    state.trades.append({
+        "strategy": STRATEGY_NAME,
+        "entry_time": state.entry_time,
+        "exit_time": ts,
+        "type": "LONG" if state.side == 1 else "SHORT",
+        "entry": round(state.entry_price, 6),
+        "exit": round(exit_price, 6),
+        "initial_sl": round(state.stop_price, 6),
+        "target": round(state.target_price, 6),
+        "qty_eth": state.qty_eth,
+        "notional_entry": state.qty_eth * state.entry_price,
+        "pnl": pnl,
+        "fee": state.entry_fee + exit_fee,
+        "capital": state.capital,
+        "return_pct": pnl / max(cap_before, 1e-12),
+        "mfe_pct": mfe_pct,
+        "mae_pct": mae_pct,
+        "holding_seconds": _elapsed_seconds(state.entry_time, ts),
+        "note": reason,
+    })
+    state.in_pos = False
+    state.side = 0
+    state.entry_time = None
+    state.entry_price = 0.0
+    state.stop_price = 0.0
+    state.target_price = 0.0
+    state.qty_eth = 0.0
+    state.entry_fee = 0.0
+    state.max_fav = 0.0
+    state.max_adv = 0.0
+    state.last_exit_time = pd.Timestamp(ts)
+
+
+def _try_open_position(state: HFBacktestState, sig: int, next_ts: pd.Timestamp, next_open: float, cfg: StrategyConfig) -> None:
+    entry = apply_entry_slippage(next_open, sig, cfg.slippage_pct)
+    if sig == 1:
+        stop = entry * (1 - cfg.stop_loss_pct)
+        target = entry * (1 + cfg.take_profit_pct)
+    else:
+        stop = entry * (1 + cfg.stop_loss_pct)
+        target = entry * (1 - cfg.take_profit_pct)
+
+    risk_per_eth = abs(entry - stop)
+    if risk_per_eth <= 0 or not math.isfinite(risk_per_eth):
+        return
+    risk_usdt = state.capital * cfg.risk_per_trade
+    q = risk_usdt / risk_per_eth
+    q = min(q, (state.capital * cfg.max_notional_mult) / entry)
+    if q <= 0 or not math.isfinite(q):
+        return
+
+    state.in_pos = True
+    state.side = sig
+    state.entry_time = pd.Timestamp(next_ts)
+    state.entry_price = entry
+    state.stop_price = stop
+    state.target_price = target
+    state.qty_eth = q
+    state.entry_fee = state.qty_eth * state.entry_price * cfg.taker_fee_rate
+    state.max_fav = entry
+    state.max_adv = entry
+
+
+def run_backtest_chunk(features: pd.DataFrame, cfg: StrategyConfig, state: HFBacktestState) -> HFBacktestState:
+    """Run one streaming feature window and carry state across calls.
+
+    The loop intentionally uses len(rows) - 1 because signals are filled at the
+    next bar open.  The final row is left pending for the next streaming window.
+    """
+    if features.empty or len(features) < 2:
+        return state
+
+    features = features.sort_index()
     rows = list(features.itertuples())
     idx = features.index
 
     for i in range(len(rows) - 1):
         row = rows[i]
-        ts = idx[i]
+        ts = pd.Timestamp(idx[i])
+        close = float(row.close)
+        state.last_ts = ts
+        state.last_close = close
 
-        if in_pos:
+        if state.in_pos:
             high = float(row.high)
             low = float(row.low)
-            close = float(row.close)
-            hold_seconds = i - entry_i
+            hold_seconds = _elapsed_seconds(state.entry_time, ts)
             exit_now = False
             exit_price = 0.0
             reason = ""
 
-            if side == 1:
-                max_fav = max(max_fav, high)
-                max_adv = min(max_adv, low)
-                if low <= stop_price:
+            if state.side == 1:
+                state.max_fav = max(state.max_fav, high)
+                state.max_adv = min(state.max_adv, low)
+                if low <= state.stop_price:
                     exit_now = True
-                    exit_price = apply_exit_slippage(stop_price, side, cfg.slippage_pct)
+                    exit_price = apply_exit_slippage(state.stop_price, state.side, cfg.slippage_pct)
                     reason = "STOP_LOSS"
-                elif high >= target_price:
+                elif high >= state.target_price:
                     exit_now = True
-                    exit_price = apply_exit_slippage(target_price, side, cfg.slippage_pct)
+                    exit_price = apply_exit_slippage(state.target_price, state.side, cfg.slippage_pct)
                     reason = "TAKE_PROFIT"
                 elif cfg.no_progress_seconds and hold_seconds >= cfg.no_progress_seconds:
-                    mfe_pct = (max_fav - entry_price) / entry_price
+                    mfe_pct = (state.max_fav - state.entry_price) / state.entry_price
                     if mfe_pct < cfg.no_progress_min_mfe_pct:
                         exit_now = True
-                        exit_price = apply_exit_slippage(close, side, cfg.slippage_pct)
+                        exit_price = apply_exit_slippage(close, state.side, cfg.slippage_pct)
                         reason = "NO_PROGRESS_EXIT"
             else:
-                max_fav = min(max_fav, low)
-                max_adv = max(max_adv, high)
-                if high >= stop_price:
+                state.max_fav = min(state.max_fav, low)
+                state.max_adv = max(state.max_adv, high)
+                if high >= state.stop_price:
                     exit_now = True
-                    exit_price = apply_exit_slippage(stop_price, side, cfg.slippage_pct)
+                    exit_price = apply_exit_slippage(state.stop_price, state.side, cfg.slippage_pct)
                     reason = "STOP_LOSS"
-                elif low <= target_price:
+                elif low <= state.target_price:
                     exit_now = True
-                    exit_price = apply_exit_slippage(target_price, side, cfg.slippage_pct)
+                    exit_price = apply_exit_slippage(state.target_price, state.side, cfg.slippage_pct)
                     reason = "TAKE_PROFIT"
                 elif cfg.no_progress_seconds and hold_seconds >= cfg.no_progress_seconds:
-                    mfe_pct = (entry_price - max_fav) / entry_price
+                    mfe_pct = (state.entry_price - state.max_fav) / state.entry_price
                     if mfe_pct < cfg.no_progress_min_mfe_pct:
                         exit_now = True
-                        exit_price = apply_exit_slippage(close, side, cfg.slippage_pct)
+                        exit_price = apply_exit_slippage(close, state.side, cfg.slippage_pct)
                         reason = "NO_PROGRESS_EXIT"
 
             if not exit_now and hold_seconds >= cfg.max_hold_seconds:
                 exit_now = True
-                exit_price = apply_exit_slippage(close, side, cfg.slippage_pct)
+                exit_price = apply_exit_slippage(close, state.side, cfg.slippage_pct)
                 reason = "MAX_HOLD_EXIT"
 
             if exit_now:
-                exit_fee = qty_eth * exit_price * cfg.taker_fee_rate
-                if side == 1:
-                    pnl = (exit_price - entry_price) * qty_eth - entry_fee - exit_fee
-                    mfe_pct = (max_fav - entry_price) / entry_price
-                    mae_pct = (entry_price - max_adv) / entry_price
-                else:
-                    pnl = (entry_price - exit_price) * qty_eth - entry_fee - exit_fee
-                    mfe_pct = (entry_price - max_fav) / entry_price
-                    mae_pct = (max_adv - entry_price) / entry_price
-                cap_before = capital
-                capital += pnl
-                peak = max(peak, capital)
-                trades.append({
-                    "strategy": STRATEGY_NAME,
-                    "entry_time": entry_time,
-                    "exit_time": ts,
-                    "type": "LONG" if side == 1 else "SHORT",
-                    "entry": round(entry_price, 6),
-                    "exit": round(exit_price, 6),
-                    "initial_sl": round(stop_price, 6),
-                    "target": round(target_price, 6),
-                    "qty_eth": qty_eth,
-                    "notional_entry": qty_eth * entry_price,
-                    "pnl": pnl,
-                    "fee": entry_fee + exit_fee,
-                    "capital": capital,
-                    "return_pct": pnl / max(cap_before, 1e-12),
-                    "mfe_pct": mfe_pct,
-                    "mae_pct": mae_pct,
-                    "holding_seconds": int(hold_seconds),
-                    "note": reason,
-                })
-                in_pos = False
-                side = 0
-                last_exit_i = i
+                _close_position(state, ts, exit_price, reason, cfg)
 
-        if not in_pos and i - last_exit_i >= int(cfg.cooldown_seconds):
+        if not state.in_pos and _cooldown_ok(state, ts, cfg):
             sig = int(getattr(row, "signal", 0))
             if sig != 0:
                 next_open = float(rows[i + 1].open)
-                entry = apply_entry_slippage(next_open, sig, cfg.slippage_pct)
-                if sig == 1:
-                    stop = entry * (1 - cfg.stop_loss_pct)
-                    target = entry * (1 + cfg.take_profit_pct)
-                else:
-                    stop = entry * (1 + cfg.stop_loss_pct)
-                    target = entry * (1 - cfg.take_profit_pct)
-                risk_per_eth = abs(entry - stop)
-                if risk_per_eth > 0 and math.isfinite(risk_per_eth):
-                    risk_usdt = capital * cfg.risk_per_trade
-                    q = risk_usdt / risk_per_eth
-                    q = min(q, (capital * cfg.max_notional_mult) / entry)
-                    if q > 0 and math.isfinite(q):
-                        in_pos = True
-                        side = sig
-                        entry_i = i + 1
-                        entry_time = idx[i + 1]
-                        entry_price = entry
-                        stop_price = stop
-                        target_price = target
-                        qty_eth = q
-                        entry_fee = qty_eth * entry_price * cfg.taker_fee_rate
-                        max_fav = entry_price
-                        max_adv = entry_price
+                _try_open_position(state, sig, pd.Timestamp(idx[i + 1]), next_open, cfg)
 
-        equity_rows.append({"time": ts, "capital": capital, "drawdown_pct": (peak - capital) / peak if peak > 0 else 0.0})
+        state.record_equity(ts)
 
-    if in_pos:
-        ts = idx[-1]
-        close = float(features.iloc[-1]["close"])
-        exit_price = apply_exit_slippage(close, side, cfg.slippage_pct)
-        exit_fee = qty_eth * exit_price * cfg.taker_fee_rate
-        if side == 1:
-            pnl = (exit_price - entry_price) * qty_eth - entry_fee - exit_fee
-            mfe_pct = (max_fav - entry_price) / entry_price
-            mae_pct = (entry_price - max_adv) / entry_price
-        else:
-            pnl = (entry_price - exit_price) * qty_eth - entry_fee - exit_fee
-            mfe_pct = (entry_price - max_fav) / entry_price
-            mae_pct = (max_adv - entry_price) / entry_price
-        cap_before = capital
-        capital += pnl
-        trades.append({
-            "strategy": STRATEGY_NAME,
-            "entry_time": entry_time,
-            "exit_time": ts,
-            "type": "LONG" if side == 1 else "SHORT",
-            "entry": round(entry_price, 6),
-            "exit": round(exit_price, 6),
-            "initial_sl": round(stop_price, 6),
-            "target": round(target_price, 6),
-            "qty_eth": qty_eth,
-            "notional_entry": qty_eth * entry_price,
-            "pnl": pnl,
-            "fee": entry_fee + exit_fee,
-            "capital": capital,
-            "return_pct": pnl / max(cap_before, 1e-12),
-            "mfe_pct": mfe_pct,
-            "mae_pct": mae_pct,
-            "holding_seconds": int(len(features) - 1 - entry_i),
-            "note": "FORCE_CLOSE_END",
-        })
-
-    equity = pd.DataFrame(equity_rows).set_index("time") if equity_rows else pd.DataFrame()
-    return trades, equity
+    return state
 
 
+def finalize_backtest(state: HFBacktestState, cfg: StrategyConfig) -> tuple[list[dict[str, Any]], pd.DataFrame]:
+    """Force-close any remaining open position at the last processed close."""
+    if state.in_pos and state.last_ts is not None and state.last_close > 0:
+        exit_price = apply_exit_slippage(state.last_close, state.side, cfg.slippage_pct)
+        _close_position(state, pd.Timestamp(state.last_ts), exit_price, "FORCE_CLOSE_END", cfg)
+        state.record_equity(pd.Timestamp(state.last_ts))
+    return state.to_result()
+
+
+def run_backtest(features: pd.DataFrame, cfg: StrategyConfig) -> tuple[list[dict[str, Any]], pd.DataFrame]:
+    """Compatibility wrapper for short test ranges."""
+    state = HFBacktestState.initial(cfg.initial_capital)
+    state = run_backtest_chunk(features, cfg, state)
+    return finalize_backtest(state, cfg)
 
 
 def parse_args() -> argparse.Namespace:
@@ -385,8 +386,17 @@ def main() -> int:
         stop_loss_pct=args.stop_loss_pct,
         take_profit_pct=args.take_profit_pct,
     )
-    print(f"Loading tick data: {cfg.symbol} {args.start_date} -> {args.end_date}")
-    bars = load_second_bars(
+    print(f"Streaming tick data by day: {cfg.symbol} {args.start_date} -> {args.end_date}")
+    state = HFBacktestState.initial(cfg.initial_capital)
+    signal_count = 0
+    long_signal_count = 0
+    short_signal_count = 0
+    processed_rows = 0
+    signal_feature_parts: list[pd.DataFrame] = []
+    full_feature_parts: list[pd.DataFrame] = [] if args.write_full_audit else []
+    report_rows: list[dict[str, Any]] = []
+
+    for window in iter_second_bar_windows_by_day(
         cfg.symbol,
         args.start_date,
         args.end_date,
@@ -394,16 +404,57 @@ def main() -> int:
         chunksize=args.chunksize,
         trades_url_template=args.trades_url_template,
         data_dir=args.data_dir,
+        progress=True,
+    ):
+        features = build_features(window.work, cfg)
+        current_features = window.slice_current(features)
+        exec_features = window.slice_execution(features)
+        if current_features.empty:
+            continue
+
+        processed_rows += int(len(current_features))
+        sig_mask = current_features["signal"] != 0
+        signal_count += int(sig_mask.sum())
+        long_signal_count += int((current_features["signal"] == 1).sum())
+        short_signal_count += int((current_features["signal"] == -1).sum())
+        if sig_mask.any():
+            signal_feature_parts.append(current_features.loc[sig_mask].copy())
+        if args.write_full_audit:
+            full_feature_parts.append(current_features.copy())
+
+        report_rows.append({"time": window.current_start, "close": float(current_features.iloc[0]["close"])})
+        report_rows.append({"time": window.current_end, "close": float(current_features.iloc[-1]["close"])})
+
+        if len(exec_features) >= 2:
+            state = run_backtest_chunk(exec_features, cfg, state)
+
+        print(
+            f"streamed day={window.meta.get('day')} "
+            f"rows={len(current_features)} warmup_rows={window.warmup_rows} "
+            f"signals={int(sig_mask.sum())} capital={state.capital:.2f}"
+        )
+
+    trades, equity = finalize_backtest(state, cfg)
+    if processed_rows <= 0:
+        raise RuntimeError(f"No tick data loaded for {cfg.symbol} {args.start_date} -> {args.end_date}")
+
+    print(
+        f"Streamed second bars: {processed_rows} current rows | "
+        f"signals={signal_count} long={long_signal_count} short={short_signal_count}"
     )
-    print(f"Second bars: {len(bars)} rows | {bars.index[0]} -> {bars.index[-1]}")
-    features = build_features(bars, cfg)
-    signal_count = int((features["signal"] != 0).sum())
-    print(f"Signals: {signal_count} | long={int((features.signal == 1).sum())} short={int((features.signal == -1).sum())}")
-    trades, equity = run_backtest(features, cfg)
+
+    if args.write_full_audit and full_feature_parts:
+        output_features = pd.concat(full_feature_parts).sort_index()
+    elif signal_feature_parts:
+        output_features = pd.concat(signal_feature_parts).sort_index()
+    else:
+        output_features = pd.DataFrame(columns=["signal"])
+
+    report_features = pd.DataFrame(report_rows).drop_duplicates(subset=["time"]).set_index("time").sort_index() if report_rows else output_features
     summary = summarize(trades, equity, cfg.initial_capital, signal_count)
     out_dir = Path(PROJECT_ROOT) / args.out_dir
-    emit_hf_platform_report(trades, features, cfg, out_dir, strategy_name=STRATEGY_NAME)
-    write_hf_outputs(features, trades, equity, summary, out_dir, write_full_audit=args.write_full_audit, strategy_name=STRATEGY_NAME)
+    emit_hf_platform_report(trades, report_features, cfg, out_dir, strategy_name=STRATEGY_NAME)
+    write_hf_outputs(output_features, trades, equity, summary, out_dir, write_full_audit=args.write_full_audit, strategy_name=STRATEGY_NAME)
     print_hf_summary(summary, out_dir, strategy_name=STRATEGY_NAME)
     return 0
 
