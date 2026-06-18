@@ -6,6 +6,7 @@ Design:
 - Local first: read the local official OKX trades ZIP if it exists.
 - Lazy fetch: if a completed day is missing locally, download the official ZIP.
 - ZIP-only cache: no sqlite/db copy; the downloaded ZIP is the cache.
+- Flat raw layout: data/okx/raw/trades/<symbol>/<official-file>.zip.
 - Memory safe: yields pandas chunks from the ZIP; never loads multiple days at once.
 """
 
@@ -99,21 +100,25 @@ class OKXTickLoader:
     def find_local_trade_file(self, day: str | date, *, template: str | None = None) -> Path | None:
         """Find a local raw trades file for the day.
 
-        New files are stored under YYYY/MM. The flat raw_dir fallback keeps older
-        downloaded files usable without re-downloading.
+        New canonical files are stored directly under raw_dir. The old YYYY/MM
+        partition is still checked as a backward-compatible fallback.
         """
         d = self._parse_date(day)
         candidates: list[Path] = []
         if template:
             url = self._format_trade_url(d, template)
             filename = Path(urlparse(url).path).name or f"{self.symbol}-trades-{d.isoformat()}.zip"
-            candidates.append(self.raw_path(d, filename))
-            candidates.append(self.raw_dir / filename)  # backward-compatible flat layout
+            # New canonical layout: flat raw_dir, matching tools/download_okx_historical_data.py.
+            candidates.append(self.raw_dir / filename)
+            # Backward-compatible fallback for older partitioned files.
+            candidates.append(self.partitioned_raw_path(d, filename))
 
         patterns = [f"*{d.isoformat()}*", f"*{d.strftime('%Y%m%d')}*"]
         for pattern in patterns:
-            candidates.extend((self.raw_dir / f"{d.year:04d}" / f"{d.month:02d}").glob(pattern))
+            # Prefer flat layout because the standalone downloader stores files here.
             candidates.extend(self.raw_dir.glob(pattern))
+            # Keep old YYYY/MM layout readable for compatibility.
+            candidates.extend((self.raw_dir / f"{d.year:04d}" / f"{d.month:02d}").glob(pattern))
 
         for path in candidates:
             if path.exists() and path.is_file() and path.stat().st_size > 0:
@@ -151,6 +156,11 @@ class OKXTickLoader:
         raise RuntimeError(f"failed to download OKX tick ZIP: {last_error}")
 
     def raw_path(self, day: str | date, filename: str) -> Path:
+        """Canonical tick raw path: flat directory, no YYYY/MM partition."""
+        return self.raw_dir / Path(filename).name
+
+    def partitioned_raw_path(self, day: str | date, filename: str) -> Path:
+        """Backward-compatible path for older generated YYYY/MM tick files."""
         d = self._parse_date(day)
         return self.raw_dir / f"{d.year:04d}" / f"{d.month:02d}" / Path(filename).name
 
@@ -180,7 +190,7 @@ class OKXTickLoader:
         rename = {}
         for col in out.columns:
             low = str(col).strip().lower()
-            if low in {"ts", "timestamp", "time", "datetime", "created_time", "createdtime", "create_time", "createdat", "created_at"}:
+            if low in {"ts", "timestamp", "time", "datetime", "created_time", "createdtime", "create_time", "created_at", "createdat"}:
                 rename[col] = "ts_ms"
             elif low in {"tradeid", "trade_id", "id", "trade_id_str"}:
                 rename[col] = "trade_id"
