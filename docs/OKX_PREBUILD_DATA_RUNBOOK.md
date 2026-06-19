@@ -510,3 +510,172 @@ python tools\prebuild_okx_range_bars.py --symbol ETH-USDT-SWAP --start-date 2022
 ```bat
 python tools\prebuild_okx_range_footprints.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1
 ```
+
+---
+
+## 九、速度优化建议
+
+如果预构建越跑越慢，通常不是读取 raw zip 变慢，而是 SQLite 表越来越大后，索引维护、`ON CONFLICT` 检查、WAL 写入和磁盘 IO 会越来越重。Range Footprint 尤其明显，因为它的行数远大于 Range Bar。
+
+### 1. 优先调大 chunksize
+
+默认：
+
+```text
+--chunksize 300000
+```
+
+内存够的话可以试：
+
+```text
+--chunksize 500000
+```
+
+甚至：
+
+```text
+--chunksize 800000
+```
+
+示例：
+
+```bat
+python tools\prebuild_okx_range_bars.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --chunksize 500000
+```
+
+### 2. Footprint 可以调大 flush_rows
+
+`prebuild_okx_range_footprints.py` 支持：
+
+```text
+--flush-rows 200000
+```
+
+意思是每个 range 的 footprint 缓存到一定行数后再批量写 SQLite。
+
+内存够可以调大：
+
+```bat
+python tools\prebuild_okx_range_footprints.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1 --chunksize 500000 --flush-rows 500000
+```
+
+`flush_rows` 越大，SQLite commit 次数越少，通常越快，但内存占用越高。
+
+### 3. 不要边下载边预构建
+
+最快方式是先把 raw trades zip 全部下载到：
+
+```text
+data/okx/raw/trades/ETH-USDT-SWAP/
+```
+
+然后再跑 prebuild。
+
+### 4. 第一次正式构建建议用本机 SSD
+
+Range Footprint 会写非常多行，机械硬盘、网盘、同步盘、杀毒实时扫描都会拖慢很多。
+
+建议 DB 和 raw zip 都放在本机 SSD，例如：
+
+```text
+D:\Code_Project\CoinBacktest\data\
+```
+
+### 5. 已经构建过的日期不要反复 force-rebuild
+
+`--force-rebuild` 会重建目标日期范围，适合逻辑改动后清理旧缓存。
+
+平时断点续跑不要加 `--force-rebuild`，直接重跑同一条命令即可。
+
+---
+
+## 十、最快方式：Range Bar + Footprint 一起预构建
+
+如果同时需要 Range Bar 和 Range Footprint，最快方式是用：
+
+```text
+tools/prebuild_okx_range_all.py
+```
+
+这个工具会一次读取 raw trades：
+
+```text
+同一个 raw trades chunk
+    -> 同时生成 r0015/r0020/r0025 range bars
+    -> 同时生成 r0015/r0020/r0025 footprints
+    -> 分别写入 okx_range_bars.db 和 okx_range_footprints.db
+```
+
+它比先跑 `prebuild_okx_range_bars.py` 再跑 `prebuild_okx_range_footprints.py` 更省 IO，因为后者会把 raw trades 读两遍。
+
+本地 32G 内存推荐命令：
+
+```bat
+python tools\prebuild_okx_range_all.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1 --chunksize 1000000 --flush-rows 1000000
+```
+
+如果本机内存和磁盘都很稳，可以更激进：
+
+```bat
+python tools\prebuild_okx_range_all.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1 --chunksize 2000000 --flush-rows 2000000
+```
+
+云服务器建议保守一点：
+
+```bat
+python tools\prebuild_okx_range_all.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1 --chunksize 300000 --flush-rows 200000
+```
+
+只构建 bars，不构建 footprints：
+
+```bat
+python tools\prebuild_okx_range_all.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --skip-footprints
+```
+
+只构建 footprints，不构建 bars：
+
+```bat
+python tools\prebuild_okx_range_all.py --symbol ETH-USDT-SWAP --start-date 2022-01-01 --end-date 2026-06-15 --range-pcts 0.0015 0.002 0.0025 --price-step 1 --skip-bars
+```
+
+日志里应该看到：
+
+```text
+[RANGE-ALL-PREBUILD-START] ... mode=one_pass_bars_and_footprints
+[RANGE-ALL-DAY-START] ... utc_day=2022-01-01 ...
+[RANGE-ALL-DAY-DONE] ... bars_by_range=... footprints_by_range=...
+```
+
+### 断点续跑时跳过已缓存前缀
+
+`prebuild_okx_range_all.py` 支持：
+
+```text
+--warmup-days 1
+```
+
+默认值就是 1。
+
+如果目标日期范围前半段已经全部缓存，只是后面有缺口，工具不会再从 `--start-date` 第一天开始重算全部逻辑，而是会从“第一个缺失日期往前 warmup N 天”开始处理。
+
+原因是 Range Bar 可以跨 UTC 日，直接从缺失日当天开始可能丢掉前一天未完成的 active bar 状态，所以默认往前多读 1 天作为 warmup。
+
+日志会显示：
+
+```text
+effective_days=2024-06-30->2026-06-15 warmup_days=1
+```
+
+意思是用户请求范围可能是 2022-01-01 到 2026-06-15，但真正需要重算的有效范围从 2024-06-30 开始。
+
+如果你确认缺失日期前面没有跨日 bar，或者只是测试，可以用：
+
+```bat
+--warmup-days 0
+```
+
+如果你想更保守，可以用：
+
+```bat
+--warmup-days 2
+```

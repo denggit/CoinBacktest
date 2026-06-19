@@ -321,6 +321,10 @@ class OKXRangeFootprintLoader:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-262144")  # about 256 MiB page cache when possible
+        conn.execute("PRAGMA mmap_size=268435456")
+        conn.execute("PRAGMA wal_autocheckpoint=10000")
         return conn
 
     def _init_db(self) -> None:

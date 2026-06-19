@@ -78,6 +78,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--db-name", default="okx_range_footprints.db")
     p.add_argument("--url-template", default=DEFAULT_OKX_TRADES_URL_TEMPLATE)
     p.add_argument("--chunksize", type=int, default=300_000)
+    p.add_argument("--flush-rows", type=int, default=200_000, help="Flush buffered footprint rows to SQLite after this many rows per range. Larger is faster but uses more memory.")
     p.add_argument("--contract-value", type=float, default=None)
     p.add_argument("--large-trade-notional-threshold", type=float, default=DEFAULT_LARGE_TRADE_NOTIONAL_THRESHOLD)
     p.add_argument("--utc-timestamps", action="store_true", help="Store UTC-naive timestamps instead of matching OKXDataLoader timezone.")
@@ -199,6 +200,17 @@ def prebuild_multi_ranges(args: argparse.Namespace, start: date, end: date) -> l
         bool(args.force_rebuild),
     )
 
+    def flush_pending(rp: float, pending: list[dict]) -> int:
+        if not pending:
+            return 0
+        loader = loaders[rp]
+        df = loader._footprints_to_frame(pending)
+        loader._upsert_footprints(df)
+        flushed = len(df)
+        pending.clear()
+        return flushed
+
+    flush_rows = max(1, int(args.flush_rows))
     for day in days:
         raw_file = next(iter(loaders.values()))._ensure_raw_trade_file(day)
         logger.info(
@@ -211,25 +223,28 @@ def prebuild_multi_ranges(args: argparse.Namespace, start: date, end: date) -> l
         )
         day_rows = {rp: 0 for rp in range_pcts}
         day_bars = {rp: 0 for rp in range_pcts}
+        pending_footprints: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
         for raw in iter_trade_csv_chunks(raw_file, chunksize=int(args.chunksize)):
             chunks_read += 1
             chunk = normalize_trade_chunk_fast(raw)
             for rp in range_pcts:
                 bars, footprints = builders[rp].process_chunk(chunk)
                 if bars:
-                    bars_closed[rp] += sum(1 for b in bars if pd.Timestamp(b["end_ts"]).date() in missing_days[rp])
+                    closed_count = sum(1 for b in bars if pd.Timestamp(b["end_ts"]).date() in missing_days[rp])
+                    bars_closed[rp] += closed_count
                     day_bars[rp] += sum(1 for b in bars if pd.Timestamp(b["end_ts"]).date() == day and day in missing_days[rp])
                 if not footprints:
                     continue
                 footprints_to_write = [fp for fp in footprints if _footprint_end_day(fp) in missing_days[rp]]
                 if not footprints_to_write:
                     continue
-                loader = loaders[rp]
-                df = loader._footprints_to_frame(footprints_to_write)
-                loader._upsert_footprints(df)
-                footprints_written[rp] += len(df)
-                day_rows[rp] += len(df)
+                pending_footprints[rp].extend(footprints_to_write)
+                footprints_written[rp] += len(footprints_to_write)
+                day_rows[rp] += len(footprints_to_write)
+                if len(pending_footprints[rp]) >= flush_rows:
+                    flush_pending(rp, pending_footprints[rp])
         for rp in range_pcts:
+            flush_pending(rp, pending_footprints[rp])
             if day in missing_days[rp]:
                 loaders[rp]._mark_coverage(day, rows=day_rows[rp], bars=day_bars[rp])
         logger.info(

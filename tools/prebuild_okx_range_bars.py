@@ -197,6 +197,9 @@ def prebuild_multi_ranges(args: argparse.Namespace, start: date, end: date) -> l
             raw_file,
         )
         day_rows = {rp: 0 for rp in range_pcts}
+        # Buffer all closed bars for this UTC day and write once per range/day.
+        # This avoids opening SQLite connections and committing for every chunk.
+        pending_bars: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
         for raw in iter_trade_csv_chunks(raw_file, chunksize=int(args.chunksize)):
             chunks_read += 1
             chunk = normalize_trade_chunk_fast(raw)
@@ -207,12 +210,14 @@ def prebuild_multi_ranges(args: argparse.Namespace, start: date, end: date) -> l
                 bars_to_write = [b for b in bars if _bar_end_day(b) in missing_days[rp]]
                 if not bars_to_write:
                     continue
-                loader = loaders[rp]
-                df = loader._bars_to_frame(bars_to_write)
-                loader._upsert_bars(df)
-                written[rp] += len(df)
-                day_rows[rp] += len(df)
+                pending_bars[rp].extend(bars_to_write)
+                written[rp] += len(bars_to_write)
+                day_rows[rp] += len(bars_to_write)
         for rp in range_pcts:
+            if pending_bars[rp]:
+                loader = loaders[rp]
+                df = loader._bars_to_frame(pending_bars[rp])
+                loader._upsert_bars(df)
             if day in missing_days[rp]:
                 loaders[rp]._mark_coverage(day, rows=day_rows[rp])
         logger.info(
