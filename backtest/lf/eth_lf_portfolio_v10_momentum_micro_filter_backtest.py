@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-ETH LF Portfolio V9E Range Exit Overlay Probe
+ETH LF Portfolio V10 Momentum Micro Filter
 ===========================================
 
 组合定位：
@@ -18,7 +18,7 @@ ETH LF Portfolio V9E Range Exit Overlay Probe
     - 不用年份、月份、日期过滤。
     - range/footprint context 只使用当前 4H 信号 bar 内已经完成的 range bars；4H close 确认后才用于下一根 4H open 的入场风险。
     - 默认 micro-filter-mode=soft：没有得到 micro aligned 确认的 LF 信号会降低入场风险；不放大 aligned 信号。
-    V9E 在 V9C 冻结基线之上，只测试 range/footprint 出场保护 overlay；不改入场信号、不改引擎优先级、不改仓位放大逻辑。
+    V10 在 V9E 冻结基线之上新增 Momentum Long micro filter：仅当 MOMENTUM_V3 多头原始信号处于 NOT_ALIGNED_RISK_REDUCED 环境时，禁止该 Momentum 信号独立入场；不影响 Bull Reclaim、Bear V3、Momentum Short，不改出场逻辑、不改引擎优先级、不改仓位放大逻辑。
 """
 
 from __future__ import annotations
@@ -73,8 +73,8 @@ from backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest import (  # noq
     weighted_avg_price,
 )
 
-STRATEGY_NAME = "eth_lf_portfolio_v9e_range_exit_overlay"
-REPORT_STRATEGY_NAME = "ETH_LF_Portfolio_V9E_RangeExitOverlay"
+STRATEGY_NAME = "eth_lf_portfolio_v10_momentum_micro_filter"
+REPORT_STRATEGY_NAME = "ETH_LF_Portfolio_V10_MomentumMicroFilter"
 
 PRIORITY_MODES: dict[str, list[str]] = {
     # V8/V7B baseline: Momentum first, Bear second, Bull Reclaim fills remaining gaps.
@@ -385,6 +385,76 @@ def apply_micro_context_filter(features: pd.DataFrame, micro_ctx: pd.DataFrame, 
         "risk_reduced": int(out["micro_filter_action"].astype(str).str.contains("RISK_REDUCED", na=False).sum()),
         "blocked": int(out["micro_filter_action"].astype(str).str.contains("BLOCKED", na=False).sum()),
     }, flush=True)
+    return out
+
+
+def build_momentum_long_not_aligned_block_mask(momentum: pd.DataFrame, micro_ctx: pd.DataFrame, args: argparse.Namespace) -> pd.Series:
+    """Build the V10 Momentum Long block mask without lookahead.
+
+    The mask uses only the completed range/footprint bucket aligned to the closed 4H
+    signal bar. Execution is still next 4H open, so this does not use future data.
+
+    Important:
+        We intentionally do NOT include the research-only LOW_VOLUME/VOL_Q1 rule here.
+        The robustness lab's VOL_Q1 was computed from full-sample signal-event quantiles,
+        which is useful for diagnosis but not safe as a production backtest rule until
+        it is converted to a rolling/past-only threshold and revalidated.
+    """
+    out = pd.Series(False, index=momentum.index, dtype=bool)
+    if bool(getattr(args, "disable_momentum_long_not_aligned_block", False)):
+        return out
+    if micro_ctx.empty or getattr(args, "micro_filter_mode", "soft") == "off":
+        return out
+
+    aligned = micro_ctx.reindex(momentum.index)
+    rf_bar_count = pd.to_numeric(aligned.get("rf_bar_count", pd.Series(np.nan, index=momentum.index)), errors="coerce")
+    rf_imbalance = pd.to_numeric(aligned.get("rf_imbalance", pd.Series(np.nan, index=momentum.index)), errors="coerce")
+    rf_close_pos = pd.to_numeric(aligned.get("rf_close_pos", pd.Series(np.nan, index=momentum.index)), errors="coerce")
+
+    has_ctx = rf_bar_count.fillna(0.0).astype(float) >= float(args.micro_min_range_bars)
+    sig = pd.to_numeric(momentum.get("signal", pd.Series(0, index=momentum.index)), errors="coerce").fillna(0).astype(int)
+    long_sig = sig.eq(1)
+
+    aligned_imb = abs(float(args.micro_aligned_imbalance))
+    contra_imb = abs(float(args.micro_contra_imbalance))
+    good_pos = float(args.micro_good_close_pos)
+    bad_pos = float(args.micro_bad_close_pos)
+
+    long_aligned = long_sig & has_ctx & (rf_imbalance >= aligned_imb) & (rf_close_pos >= good_pos)
+    long_contra = long_sig & has_ctx & (rf_imbalance <= -contra_imb) & (rf_close_pos <= bad_pos)
+
+    # Match the research lab's engine-specific micro action:
+    # NOT_ALIGNED_RISK_REDUCED = signal has context but is neither aligned nor contra.
+    return long_sig & has_ctx & (~long_aligned) & (~long_contra)
+
+
+def apply_momentum_long_not_aligned_block(momentum: pd.DataFrame, micro_ctx: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+    """V10 entry filter: block only raw Momentum Long NOT_ALIGNED entries.
+
+    This is engine-specific and direction-specific. It does not block:
+        - BULL_RECLAIM_V2 long entries
+        - BEAR_V3_ONLY short entries
+        - MOMENTUM_V3 short entries
+        - Momentum signals that are already aligned/neutral without completed micro context
+    """
+    out = momentum.copy()
+    mask = build_momentum_long_not_aligned_block_mask(out, micro_ctx, args)
+    out["momentum_long_not_aligned_blocked"] = False
+    out["momentum_long_not_aligned_block_reason"] = "NONE"
+    if not bool(mask.any()):
+        print("V10 Momentum Long NOT_ALIGNED block count: 0", flush=True)
+        return out
+
+    for col in ["signal", "momentum_signal"]:
+        if col in out.columns:
+            out.loc[mask, col] = 0
+    for col in ["long_signal", "short_signal"]:
+        if col in out.columns:
+            out.loc[mask, col] = False
+
+    out.loc[mask, "momentum_long_not_aligned_blocked"] = True
+    out.loc[mask, "momentum_long_not_aligned_block_reason"] = "MOMENTUM_LONG_NOT_ALIGNED_BLOCKED"
+    print(f"V10 Momentum Long NOT_ALIGNED block count: {int(mask.sum())}", flush=True)
     return out
 
 
@@ -840,244 +910,6 @@ def run_priority_backtest(
     return trades, equity
 
 
-
-
-def _force_close_mask(tdf: pd.DataFrame) -> pd.Series:
-    if tdf.empty or "note" not in tdf.columns:
-        return pd.Series(False, index=tdf.index)
-    return tdf["note"].astype(str).eq("FORCE_CLOSE_END")
-
-
-def _summarize_trade_frame(tdf: pd.DataFrame, initial_capital: float, equity: pd.DataFrame | None = None) -> dict[str, Any]:
-    """Summarize a trade frame without mutating backtest logic.
-
-    Used to report closed-only metrics separately from mark-to-market/forced-end metrics.
-    This prevents a large unfinished trend trade from being mixed into the same headline
-    metrics as strategy-exited trades.
-    """
-    if tdf.empty:
-        return {
-            "total_trades": 0,
-            "final_capital": round(float(initial_capital), 4),
-            "total_return_pct": 0.0,
-            "win_rate": 0.0,
-            "gross_profit": 0.0,
-            "gross_loss": 0.0,
-            "profit_factor": "inf",
-            "expectancy_pct": 0.0,
-            "avg_win_pct": 0.0,
-            "avg_loss_pct": 0.0,
-            "pnl_ratio": "inf",
-            "total_fees": 0.0,
-            "max_drawdown_pct": round(float(equity["drawdown_pct"].max() * 100), 4) if equity is not None and not equity.empty else 0.0,
-        }
-    pnl = pd.to_numeric(tdf["pnl"], errors="coerce").fillna(0.0)
-    ret = pd.to_numeric(tdf["return_pct"], errors="coerce").fillna(0.0)
-    wins = tdf[pnl > 0]
-    losses = tdf[pnl <= 0]
-    gross_profit = float(pd.to_numeric(wins["pnl"], errors="coerce").fillna(0.0).sum()) if not wins.empty else 0.0
-    gross_loss = float(-pd.to_numeric(losses["pnl"], errors="coerce").fillna(0.0).sum()) if not losses.empty else 0.0
-    avg_win_pct = float(pd.to_numeric(wins["return_pct"], errors="coerce").mean() * 100) if not wins.empty else 0.0
-    avg_loss_pct = float(pd.to_numeric(losses["return_pct"], errors="coerce").mean() * 100) if not losses.empty else 0.0
-    pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-    pnl_ratio = abs(avg_win_pct / avg_loss_pct) if avg_loss_pct < 0 else float("inf")
-    final_capital = float(tdf.iloc[-1]["capital"])
-    return {
-        "total_trades": int(len(tdf)),
-        "long_trades": int((tdf["type"] == "LONG").sum()) if "type" in tdf.columns else 0,
-        "short_trades": int((tdf["type"] == "SHORT").sum()) if "type" in tdf.columns else 0,
-        "final_capital": round(final_capital, 4),
-        "total_return_pct": round((final_capital / initial_capital - 1) * 100, 4),
-        "win_rate": round(float((pnl > 0).mean() * 100), 4),
-        "gross_profit": round(gross_profit, 4),
-        "gross_loss": round(gross_loss, 4),
-        "profit_factor": round(pf, 4) if math.isfinite(pf) else "inf",
-        "expectancy_pct": round(float(ret.mean() * 100), 6),
-        "avg_win_pct": round(avg_win_pct, 6),
-        "avg_loss_pct": round(avg_loss_pct, 6),
-        "pnl_ratio": round(pnl_ratio, 4) if math.isfinite(pnl_ratio) else "inf",
-        "total_fees": round(float(pd.to_numeric(tdf.get("fee", 0.0), errors="coerce").fillna(0.0).sum()), 4),
-        "max_drawdown_pct": round(float(equity["drawdown_pct"].max() * 100), 4) if equity is not None and not equity.empty else 0.0,
-    }
-
-
-def add_force_close_metrics(summary: dict[str, Any], trades: list[dict[str, Any]], equity: pd.DataFrame, initial_capital: float) -> dict[str, Any]:
-    """Add closed-only vs forced-end mark-to-market metrics to the summary.
-
-    The original deep report intentionally force-closes any open position at the test end.
-    For live-readiness analysis, that forced close must be reported separately because it is
-    not a strategy-generated exit and can dominate a low-frequency trend strategy's headline.
-    """
-    out = dict(summary)
-    tdf = pd.DataFrame(trades)
-    if tdf.empty:
-        out.update({
-            "force_close_trade_count": 0,
-            "force_close_pnl": 0.0,
-            "closed_total_trades": 0,
-            "closed_final_capital": round(float(initial_capital), 4),
-            "closed_total_return_pct": 0.0,
-        })
-        return out
-
-    forced_mask = _force_close_mask(tdf)
-    forced = tdf[forced_mask]
-    closed = tdf[~forced_mask]
-    closed_metrics = _summarize_trade_frame(closed, initial_capital, equity)
-    forced_pnl = float(pd.to_numeric(forced.get("pnl", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()) if not forced.empty else 0.0
-    forced_return = float(pd.to_numeric(forced.get("return_pct", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum() * 100) if not forced.empty else 0.0
-    out.update({
-        "marked_final_capital_including_force_close": out.get("final_capital"),
-        "marked_total_return_pct_including_force_close": out.get("total_return_pct"),
-        "force_close_trade_count": int(forced_mask.sum()),
-        "force_close_pnl": round(forced_pnl, 4),
-        "force_close_return_pct_sum": round(forced_return, 6),
-        "closed_total_trades": closed_metrics["total_trades"],
-        "closed_final_capital": closed_metrics["final_capital"],
-        "closed_total_return_pct": closed_metrics["total_return_pct"],
-        "closed_win_rate": closed_metrics["win_rate"],
-        "closed_profit_factor": closed_metrics["profit_factor"],
-        "closed_expectancy_pct": closed_metrics["expectancy_pct"],
-        "closed_avg_win_pct": closed_metrics["avg_win_pct"],
-        "closed_avg_loss_pct": closed_metrics["avg_loss_pct"],
-        "closed_pnl_ratio": closed_metrics["pnl_ratio"],
-        "closed_total_fees": closed_metrics["total_fees"],
-        "closed_max_drawdown_pct": closed_metrics["max_drawdown_pct"],
-    })
-    if not forced.empty:
-        last_forced = forced.iloc[-1]
-        out.update({
-            "force_close_side": str(last_forced.get("type", "")),
-            "force_close_entry_time": str(last_forced.get("entry_time", "")),
-            "force_close_exit_time": str(last_forced.get("exit_time", "")),
-            "force_close_note": str(last_forced.get("note", "")),
-        })
-    return out
-
-
-def build_signal_opportunity_audit(features: pd.DataFrame, trades: list[dict[str, Any]]) -> pd.DataFrame:
-    """Audit portfolio signals that were executed vs ignored by the single-position executor.
-
-    The backtest intentionally allows only one active position. This audit does not change
-    execution; it reveals how many selected portfolio signals are swallowed while a position
-    is already open and whether those ignored signals had favorable forward movement.
-    """
-    if features.empty:
-        return pd.DataFrame()
-
-    f = features.sort_index().copy()
-    trade_rows: list[dict[str, Any]] = []
-    for trade in trades:
-        try:
-            entry_time = pd.Timestamp(trade["entry_time"])
-            exit_time = pd.Timestamp(trade["exit_time"])
-        except Exception:
-            continue
-        signal_time = entry_time - pd.Timedelta(hours=4)
-        trade_rows.append({
-            "signal_time": signal_time,
-            "entry_time": entry_time,
-            "exit_time": exit_time,
-            "side": 1 if str(trade.get("type", "")).upper() == "LONG" else -1,
-            "engine": str(trade.get("engine", "UNKNOWN")),
-            "note": str(trade.get("note", "")),
-            "pnl": float(trade.get("pnl", 0.0) or 0.0),
-            "return_pct": float(trade.get("return_pct", 0.0) or 0.0),
-        })
-    tdf = pd.DataFrame(trade_rows)
-    executed_signal_times = set(pd.to_datetime(tdf["signal_time"]).tolist()) if not tdf.empty else set()
-
-    idx = list(f.index)
-    rows_out: list[dict[str, Any]] = []
-    portfolio_signal = pd.to_numeric(f.get("signal", 0), errors="coerce").fillna(0).astype(int)
-    signal_positions = np.flatnonzero(portfolio_signal.to_numpy() != 0)
-    for pos in signal_positions:
-        ts = pd.Timestamp(idx[pos])
-        signal = int(portfolio_signal.iloc[pos])
-        next_pos = pos + 1
-        next_open = float(f.iloc[next_pos]["open"]) if next_pos < len(f) else float("nan")
-        active_trade = None
-        if not tdf.empty:
-            active = tdf[(tdf["entry_time"] <= ts) & (tdf["exit_time"] > ts)]
-            if not active.empty:
-                active_trade = active.iloc[-1]
-        action = "EXECUTED" if ts in executed_signal_times else "IGNORED"
-        ignored_reason = ""
-        current_position_side = 0
-        current_position_engine = "NONE"
-        if active_trade is not None:
-            current_position_side = int(active_trade["side"])
-            current_position_engine = str(active_trade["engine"])
-            if action != "EXECUTED":
-                action = "IGNORED_IN_POSITION"
-                ignored_reason = "single_active_position"
-        elif action != "EXECUTED":
-            ignored_reason = "cooldown_or_position_transition_or_no_qty"
-
-        item: dict[str, Any] = {
-            "timestamp": ts,
-            "signal": signal,
-            "selected_engine": str(f.iloc[pos].get("selected_engine", "NONE")),
-            "selected_priority": int(f.iloc[pos].get("selected_priority", 0) or 0),
-            "momentum_signal": int(f.iloc[pos].get("momentum_signal", 0) or 0),
-            "bear_signal": int(f.iloc[pos].get("bear_signal", 0) or 0),
-            "bull_signal": int(f.iloc[pos].get("bull_signal", 0) or 0),
-            "portfolio_conflict": bool(f.iloc[pos].get("portfolio_conflict", False)),
-            "action_taken": action,
-            "ignored_reason": ignored_reason,
-            "current_position_side": current_position_side,
-            "current_position_engine": current_position_engine,
-            "next_open": next_open,
-            "risk_mult": float(f.iloc[pos].get("risk_mult", float("nan"))),
-            "quality_mult": float(f.iloc[pos].get("quality_mult", float("nan"))),
-            "micro_context_available": bool(f.iloc[pos].get("micro_context_available", False)),
-            "micro_aligned": bool(f.iloc[pos].get("micro_aligned", False)),
-            "micro_contra": bool(f.iloc[pos].get("micro_contra", False)),
-            "micro_entry_risk_scale": float(f.iloc[pos].get("micro_entry_risk_scale", 1.0)),
-            "rf_imbalance": float(f.iloc[pos].get("rf_imbalance", float("nan"))),
-            "rf_close_pos": float(f.iloc[pos].get("rf_close_pos", float("nan"))),
-        }
-        for horizon in (1, 3, 6, 12):
-            target_pos = pos + horizon
-            if next_pos < len(f) and target_pos < len(f) and math.isfinite(next_open) and next_open > 0:
-                future_close = float(f.iloc[target_pos]["close"])
-                item[f"future_{horizon}bar_signal_return_pct"] = signal * (future_close / next_open - 1.0) * 100.0
-            else:
-                item[f"future_{horizon}bar_signal_return_pct"] = float("nan")
-        rows_out.append(item)
-    return pd.DataFrame(rows_out)
-
-
-def add_signal_opportunity_summary(summary: dict[str, Any], opportunity: pd.DataFrame) -> dict[str, Any]:
-    out = dict(summary)
-    if opportunity.empty:
-        out.update({
-            "portfolio_signal_opportunity_count": 0,
-            "portfolio_signal_executed_count": 0,
-            "portfolio_signal_ignored_in_position_count": 0,
-        })
-        return out
-    actions = opportunity["action_taken"].astype(str)
-    ignored_in_pos = actions.eq("IGNORED_IN_POSITION")
-    executed = actions.eq("EXECUTED")
-    out.update({
-        "portfolio_signal_opportunity_count": int(len(opportunity)),
-        "portfolio_signal_executed_count": int(executed.sum()),
-        "portfolio_signal_ignored_in_position_count": int(ignored_in_pos.sum()),
-        "portfolio_signal_other_ignored_count": int((~executed & ~ignored_in_pos).sum()),
-        "portfolio_signal_utilization_pct": round(float(executed.mean() * 100), 4),
-        "portfolio_signal_ignored_in_position_pct": round(float(ignored_in_pos.mean() * 100), 4),
-    })
-    for horizon in (1, 3, 6, 12):
-        col = f"future_{horizon}bar_signal_return_pct"
-        if col in opportunity.columns:
-            out[f"ignored_in_position_avg_{horizon}bar_signal_return_pct"] = round(float(opportunity.loc[ignored_in_pos, col].mean()), 6)
-            out[f"executed_avg_{horizon}bar_signal_return_pct"] = round(float(opportunity.loc[executed, col].mean()), 6)
-    if "selected_engine" in opportunity.columns:
-        out["ignored_in_position_engine_counts"] = opportunity.loc[ignored_in_pos, "selected_engine"].value_counts().to_dict()
-        out["executed_engine_counts_from_opportunity"] = opportunity.loc[executed, "selected_engine"].value_counts().to_dict()
-    return out
-
 def attach_engine_to_trades(trades: list[dict[str, Any]], features: pd.DataFrame) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for trade in trades:
@@ -1120,23 +952,15 @@ def attach_engine_to_trades(trades: list[dict[str, Any]], features: pd.DataFrame
     return out
 
 
-def write_outputs(
-    trades: list[dict[str, Any]],
-    equity: pd.DataFrame,
-    features: pd.DataFrame,
-    summary: dict[str, Any],
-    out_dir: Path,
-    signal_opportunity: pd.DataFrame | None = None,
-) -> None:
+def write_outputs(trades: list[dict[str, Any]], equity: pd.DataFrame, features: pd.DataFrame, summary: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(trades).to_csv(out_dir / f"{STRATEGY_NAME}_trades.csv", index=False)
     if not equity.empty:
         equity.to_csv(out_dir / f"{STRATEGY_NAME}_equity.csv")
-    if signal_opportunity is not None and not signal_opportunity.empty:
-        signal_opportunity.to_csv(out_dir / f"{STRATEGY_NAME}_signal_opportunity_audit.csv", index=False)
     audit_cols = [
         "open", "high", "low", "close", "volume", "atr", "atr_pct", "adx",
         "risk_mult", "quality_mult", "momentum_signal", "bear_signal", "bull_signal", "signal",
+        "momentum_long_not_aligned_blocked", "momentum_long_not_aligned_block_reason",
         "selected_engine", "selected_priority", "momentum_selected", "bear_only", "bull_reclaim",
         "long_signal", "short_signal",
         "micro_context_available", "micro_aligned", "micro_contra", "micro_entry_risk_scale", "micro_filter_action",
@@ -1151,7 +975,7 @@ def write_outputs(
 
 def print_summary(summary: dict[str, Any], out_dir: Path) -> None:
     print("\n" + "=" * 92)
-    print("ETH LF Portfolio V9E Range Exit Overlay Probe Backtest Summary")
+    print("ETH LF Portfolio V10 Momentum Micro Filter Backtest Summary")
     print("=" * 92)
     for k, v in summary.items():
         print(f"{k:>34}: {v}")
@@ -1230,6 +1054,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--range-exit-bad-close-pos", type=float, default=0.35, help="Hostile close-position threshold inside the completed 4H range bucket.")
     p.add_argument("--range-exit-no-reversal-required", dest="range_exit_require_reversal", action="store_false", help="Allow MFE giveback exit without hostile range/footprint reversal context. Usually too aggressive; for stress testing only.")
     p.set_defaults(range_exit_require_reversal=True)
+    p.add_argument("--disable-momentum-long-not-aligned-block", action="store_true", help="V10 only: disable the engine-specific block for raw MOMENTUM_V3 Long signals when completed micro context is NOT_ALIGNED_RISK_REDUCED.")
     p.add_argument("--out-dir", default=None)
     return p.parse_args()
 
@@ -1258,8 +1083,9 @@ def main() -> int:
     momentum = build_momentum_features(base, mom_cfg)
     bear = build_bear_features(base, bear_cfg)
     bull = build_bull_features(base, bull_cfg)
-    features = select_portfolio_signals(momentum, bear, bull, args)
     micro_ctx = load_range_footprint_context(args, load_start_str, args.end_date)
+    momentum = apply_momentum_long_not_aligned_block(momentum, micro_ctx, args)
+    features = select_portfolio_signals(momentum, bear, bull, args)
     features = apply_micro_context_filter(features, micro_ctx, args)
     # Critical: warmup rows are only used for indicators. Trading starts at --start-date.
     before_slice_rows = len(features)
@@ -1276,6 +1102,7 @@ def main() -> int:
         "bear_only": int(features.bear_only.sum()),
         "bull_reclaim": int(features.bull_reclaim.sum()),
         "portfolio_conflict": int(features.get("portfolio_conflict", pd.Series(False, index=features.index)).sum()),
+        "momentum_long_not_aligned_blocked": int(features.get("momentum_long_not_aligned_blocked", pd.Series(False, index=features.index)).sum()),
         "priority_mode": args.priority_mode,
         "global_risk_scale": args.global_risk_scale,
         "micro_contra": int(features.get("micro_contra", pd.Series(False, index=features.index)).sum()),
@@ -1291,9 +1118,6 @@ def main() -> int:
     )
     trades = attach_engine_to_trades(trades, features)
     summary = summarize(trades, equity, exec_cfg.initial_capital)
-    summary = add_force_close_metrics(summary, trades, equity, exec_cfg.initial_capital)
-    signal_opportunity = build_signal_opportunity_audit(features, trades)
-    summary = add_signal_opportunity_summary(summary, signal_opportunity)
     if trades:
         tdf = pd.DataFrame(trades)
         summary["engine_counts"] = tdf["engine"].value_counts().to_dict()
@@ -1316,6 +1140,10 @@ def main() -> int:
     summary["priority_order"] = PRIORITY_MODES[args.priority_mode]
     summary["global_risk_scale"] = args.global_risk_scale
     summary["micro_filter_mode"] = args.micro_filter_mode
+    summary["momentum_long_not_aligned_block_enabled"] = not bool(args.disable_momentum_long_not_aligned_block)
+    summary["momentum_long_not_aligned_block_count"] = int(features.get("momentum_long_not_aligned_blocked", pd.Series(False, index=features.index)).sum())
+    summary["momentum_long_low_volume_block_enabled"] = False
+    summary["momentum_long_low_volume_block_note"] = "Not included in V10 because the research VOL_Q1 rule used full-sample signal-event quantiles; requires a no-lookahead rolling validation before production use."
     summary["range_pct"] = args.range_pct
     summary["price_step"] = args.price_step
     summary["micro_contra_imbalance"] = args.micro_contra_imbalance
@@ -1338,7 +1166,7 @@ def main() -> int:
     summary["trade_start_date"] = args.start_date
     summary["warmup_days"] = int(args.warmup_days or 0)
 
-    write_outputs(trades, equity, features, summary, out_dir, signal_opportunity)
+    write_outputs(trades, equity, features, summary, out_dir)
     print_summary(summary, out_dir)
     print_deep_report(trades, features, exec_cfg, out_dir)
     return 0
