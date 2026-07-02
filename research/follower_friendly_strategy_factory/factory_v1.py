@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Follower-Friendly Strategy Factory V1
-=====================================
+Follower-Friendly Strategy Factory V1.3
+=======================================
 
 Research-only strategy factory for ETH perpetual follower/copy-trading friendly
 engines. It is intentionally independent from V10B/portfolio routing.
@@ -54,11 +54,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_FILE)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.backtest_common.data import load_ohlcv_data as load_data  # noqa: E402
+from src.data_feed.okx_loader import OKXDataLoader  # noqa: E402
 from src.backtest_common.execution import apply_entry_slippage, apply_exit_slippage  # noqa: E402
-from src.backtest_common.indicators import adx, atr, ema  # noqa: E402
+from src.backtest_common.indicators import adx, atr, ema, rsi  # noqa: E402
+from src.research_common.event_study import causal_align_context  # noqa: E402
 
-STRATEGY_NAME = "follower_friendly_strategy_factory_v1"
+STRATEGY_NAME = "follower_friendly_strategy_factory_v1_3"
 DEFAULT_SYMBOL = "ETH-USDT-SWAP"
 DEFAULT_START_DATE = "2023-01-01"
 DEFAULT_END_DATE = "2026-06-30"
@@ -229,85 +230,129 @@ def _bool_series(index: pd.Index, value: bool = False) -> pd.Series:
 # -----------------------------------------------------------------------------
 
 
+def _load_ohlcv_via_data_feed(symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Load OHLCV through src.data_feed.OKXDataLoader, matching research lab convention."""
+    loader = OKXDataLoader(symbol=symbol, timeframe=timeframe)
+    df = loader.fetch_data_by_date_range(start_date, end_date)
+    if df.empty:
+        raise RuntimeError(f"No data loaded for {symbol} {timeframe} {start_date} -> {end_date}")
+    df = df.sort_index().copy()
+    required = ["open", "high", "low", "close", "volume"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise RuntimeError(f"Loaded data missing columns: {missing}")
+    for col in required:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=required)
+    if df.index.has_duplicates:
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+    return df
+
+
 def load_market_frames(args: argparse.Namespace) -> dict[str, pd.DataFrame]:
-    """Load primary and higher-timeframe OHLCV once.
+    """Load primary and higher-timeframe OHLCV once through src.data_feed.
 
     Warmup defaults follow the project convention: data loads from 2022-01-01,
     while trades are evaluated from 2023-01-01 onward.
     """
     if getattr(args, "data_source", "ohlcv") != "ohlcv":
-        raise ValueError("V1.2 only supports --data-source ohlcv. Use V2 for trade_bar/range_bar/footprint sources.")
+        raise ValueError("V1.3 only supports --data-source ohlcv. Use V2 for trade_bar/range_bar/footprint sources.")
     frames: dict[str, pd.DataFrame] = {}
     needed = {args.primary_timeframe, args.context_timeframe}
     if args.extra_context_timeframe:
         needed.add(args.extra_context_timeframe)
     for tf in sorted(needed, key=lambda x: _timeframe_delta(x)):
         print(f"[load] source={args.data_source} {args.symbol} {tf} {args.warmup_start_date}->{args.end_date}", flush=True)
-        df = load_data(args.symbol, args.warmup_start_date, args.end_date, tf)
-        if df.empty:
-            raise RuntimeError(f"No data loaded for {args.symbol} {tf}")
-        frames[tf] = df.sort_index().copy()
+        df = _load_ohlcv_via_data_feed(args.symbol, tf, args.warmup_start_date, args.end_date)
+        frames[tf] = df
         print(f"       rows={len(df):,} {df.index[0]} -> {df.index[-1]}", flush=True)
     return frames
 
 
 def build_primary_features(primary: pd.DataFrame) -> pd.DataFrame:
-    out = primary.sort_index().copy()
-    close = _num(out, "close", np.nan)
-    high = _num(out, "high", np.nan)
-    low = _num(out, "low", np.nan)
-    open_ = _num(out, "open", np.nan)
-    volume = _num(out, "volume", 0.0)
+    """Build reusable primary-frame features in one concat to avoid fragmentation."""
+    base = primary.sort_index().copy()
+    close = _num(base, "close", np.nan)
+    high = _num(base, "high", np.nan)
+    low = _num(base, "low", np.nan)
+    open_ = _num(base, "open", np.nan)
+    volume = _num(base, "volume", 0.0)
+
+    features: dict[str, pd.Series] = {}
 
     for span in sorted({8, 12, 20, 34, 50, 89, 144, 200}):
-        out[f"ema{span}"] = ema(close, span)
+        features[f"ema{span}"] = ema(close, span)
 
     for length in sorted({14, 20, 28}):
-        out[f"atr{length}"] = atr(out, length)
-        out[f"atr_pct{length}"] = out[f"atr{length}"] / close.replace(0, np.nan)
+        features[f"atr{length}"] = atr(base, length)
+        features[f"atr_pct{length}"] = features[f"atr{length}"] / close.replace(0, np.nan)
 
-    out["bar_range"] = (high - low).replace(0, np.nan)
-    out["close_pos"] = ((close - low) / out["bar_range"]).clip(0.0, 1.0)
-    out["body_pct"] = ((close - open_).abs() / out["bar_range"]).clip(0.0, 1.0)
-    out["upper_wick_pct"] = ((high - np.maximum(open_, close)) / out["bar_range"]).clip(0.0, 1.0)
-    out["lower_wick_pct"] = ((np.minimum(open_, close) - low) / out["bar_range"]).clip(0.0, 1.0)
-    out["ret_1"] = close.pct_change()
-    out["ret_3"] = close.pct_change(3)
+    bar_range = (high - low).replace(0, np.nan)
+    features["bar_range"] = bar_range
+    features["close_pos"] = ((close - low) / bar_range).clip(0.0, 1.0)
+    features["body_pct"] = ((close - open_).abs() / bar_range).clip(0.0, 1.0)
+    features["upper_wick_pct"] = ((high - np.maximum(open_, close)) / bar_range).clip(0.0, 1.0)
+    features["lower_wick_pct"] = ((np.minimum(open_, close) - low) / bar_range).clip(0.0, 1.0)
+    features["ret_1"] = close.pct_change()
+    features["ret_3"] = close.pct_change(3)
 
-    # Rolling volume is shifted to avoid comparing against the current bar's
-    # final volume before the signal bar has closed. Because signals are made at
-    # the close of this bar, current volume is allowed in the signal itself, but
-    # the baseline must be past-only.
+    # Current signal-bar volume is visible at signal close; the comparison
+    # baseline is shifted to past-only values.
     vol_base = volume.shift(1).rolling(144, min_periods=30).median().replace(0, np.nan)
-    out["volume_ratio"] = volume / vol_base
+    features["volume_ratio"] = volume / vol_base
 
     for win in sorted({48, 72, 96, 144, 288}):
         pv = close * volume
         rv = volume.rolling(win, min_periods=max(10, win // 4)).sum().replace(0, np.nan)
-        out[f"rvwap{win}"] = pv.rolling(win, min_periods=max(10, win // 4)).sum() / rv
-        spread = close / out[f"rvwap{win}"] - 1.0
+        rvwap = pv.rolling(win, min_periods=max(10, win // 4)).sum() / rv
+        spread = close / rvwap - 1.0
         spread_std = spread.shift(1).rolling(win, min_periods=max(20, win // 3)).std().replace(0, np.nan)
-        out[f"vwap_z{win}"] = spread / spread_std
+        features[f"rvwap{win}"] = rvwap
+        features[f"vwap_z{win}"] = spread / spread_std
 
-    for lb in sorted({12, 24, 48, 72, 96, 144}):
-        out[f"prior_high_{lb}"] = high.shift(1).rolling(lb, min_periods=max(5, lb // 3)).max()
-        out[f"prior_low_{lb}"] = low.shift(1).rolling(lb, min_periods=max(5, lb // 3)).min()
-        out[f"break_high_{lb}"] = close > out[f"prior_high_{lb}"]
-        out[f"break_low_{lb}"] = close < out[f"prior_low_{lb}"]
-        out[f"recent_break_high_{lb}"] = out[f"break_high_{lb}"].shift(1).rolling(max(3, lb // 6), min_periods=1).max().fillna(0).astype(bool)
-        out[f"recent_break_low_{lb}"] = out[f"break_low_{lb}"].shift(1).rolling(max(3, lb // 6), min_periods=1).max().fillna(0).astype(bool)
+    for length in sorted({14, 28}):
+        features[f"rsi{length}"] = rsi(close, length)
 
+    for win in sorted({48, 72, 96, 144, 288}):
+        mean = close.shift(1).rolling(win, min_periods=max(20, win // 3)).mean()
+        std = close.shift(1).rolling(win, min_periods=max(20, win // 3)).std().replace(0, np.nan)
+        features[f"boll_mid_{win}"] = mean
+        features[f"boll_z_{win}"] = (close - mean) / std
+        features[f"boll_upper_{win}_2"] = mean + 2.0 * std
+        features[f"boll_lower_{win}_2"] = mean - 2.0 * std
+
+    for lb in sorted({12, 24, 48, 72, 96, 144, 192}):
+        prior_high = high.shift(1).rolling(lb, min_periods=max(5, lb // 3)).max()
+        prior_low = low.shift(1).rolling(lb, min_periods=max(5, lb // 3)).min()
+        break_high = close > prior_high
+        break_low = close < prior_low
+        features[f"prior_high_{lb}"] = prior_high
+        features[f"prior_low_{lb}"] = prior_low
+        features[f"break_high_{lb}"] = break_high
+        features[f"break_low_{lb}"] = break_low
+        features[f"recent_break_high_{lb}"] = break_high.shift(1).rolling(max(3, lb // 6), min_periods=1).max().fillna(0).astype(bool)
+        features[f"recent_break_low_{lb}"] = break_low.shift(1).rolling(max(3, lb // 6), min_periods=1).max().fillna(0).astype(bool)
+
+    range_pct = (high - low) / close.replace(0, np.nan)
     for win in sorted({72, 96, 144, 288}):
-        range_pct = (high - low) / close.replace(0, np.nan)
-        out[f"range_pct_med_{win}"] = range_pct.shift(1).rolling(win, min_periods=max(20, win // 3)).median()
-        out[f"range_pct_q_{win}_20"] = range_pct.shift(1).rolling(win, min_periods=max(20, win // 3)).quantile(0.20)
-        out[f"squeeze_{win}_q20"] = range_pct <= out[f"range_pct_q_{win}_20"]
-        out[f"recent_squeeze_{win}"] = out[f"squeeze_{win}_q20"].shift(1).rolling(max(6, win // 8), min_periods=1).max().fillna(0).astype(bool)
+        q20 = range_pct.shift(1).rolling(win, min_periods=max(20, win // 3)).quantile(0.20)
+        squeeze = range_pct <= q20
+        features[f"range_pct_med_{win}"] = range_pct.shift(1).rolling(win, min_periods=max(20, win // 3)).median()
+        features[f"range_pct_q_{win}_20"] = q20
+        features[f"squeeze_{win}_q20"] = squeeze
+        features[f"recent_squeeze_{win}"] = squeeze.shift(1).rolling(max(6, win // 8), min_periods=1).max().fillna(0).astype(bool)
 
-    return out
+    return pd.concat([base, pd.DataFrame(features, index=base.index)], axis=1).copy()
 
 
 def build_context_features(ctx: pd.DataFrame, timeframe: str, prefix: str) -> pd.DataFrame:
+    """Build higher-timeframe context with bar-start index and explicit available_time.
+
+    The returned frame intentionally keeps the original bar-start index.
+    causal_merge_context() delegates the actual available-time shift to
+    src.research_common.event_study.causal_align_context(), matching the
+    project event-study lab convention.
+    """
     out = ctx.sort_index().copy()
     close = _num(out, "close", np.nan)
     out[f"{prefix}_ema20"] = ema(close, 20)
@@ -322,23 +367,17 @@ def build_context_features(ctx: pd.DataFrame, timeframe: str, prefix: str) -> pd
     out[f"{prefix}_bar_start_time"] = out.index
     out[f"{prefix}_available_time"] = out.index + _timeframe_delta(timeframe)
     keep = [c for c in out.columns if c.startswith(prefix)]
-    aligned = out[keep].copy()
-    aligned.index = aligned[f"{prefix}_available_time"]
-    return aligned.sort_index()
+    return out[keep].copy().sort_index()
 
 
-def causal_merge_context(primary_features: pd.DataFrame, context_features: pd.DataFrame) -> pd.DataFrame:
-    """Merge context using bar_available_time <= primary signal time."""
-    left = primary_features.sort_index().copy()
-    right = context_features.sort_index().copy()
-    merged = pd.merge_asof(
-        left,
-        right,
-        left_index=True,
-        right_index=True,
-        direction="backward",
+def causal_merge_context(primary_features: pd.DataFrame, context_features: pd.DataFrame, context_timeframe: str) -> pd.DataFrame:
+    """Merge context using bar_available_time <= primary signal time via research_common."""
+    return causal_align_context(
+        primary_features.sort_index(),
+        context_features.sort_index(),
+        timeframe=_timeframe_delta(context_timeframe),
+        suffix="_ctxdup",
     )
-    return merged
 
 
 # -----------------------------------------------------------------------------
@@ -362,18 +401,63 @@ def _make_spec(family: str, args: argparse.Namespace, **kwargs: Any) -> Strategy
     )
 
 
-def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
-    """Generate explainable candidate specs without exact banned baseline forms."""
-    specs: list[StrategySpec] = []
-    families = set(args.families.split(",")) if args.families else {
-        "trend_pullback_continuation",
-        "vwap_reversion_regime",
-        "breakout_retest_continuation",
-        "squeeze_expansion_continuation",
-    }
-    side_modes = ["both", "long_only", "short_only"] if args.include_side_modes else ["both"]
+DEFAULT_FAMILIES = [
+    "trend_pullback_continuation",
+    "vwap_reversion_regime",
+    "breakout_retest_continuation",
+    "squeeze_expansion_continuation",
+    "failed_breakout_reversion",
+    "range_boundary_reversion",
+    "bollinger_reversion_regime",
+    "trend_pullback_reversion",
+]
 
-    if "trend_pullback_continuation" in families:
+
+def _round_robin_specs(grouped: dict[str, list[StrategySpec]], family_order: list[str], max_specs: int | None) -> list[StrategySpec]:
+    """Select specs across families evenly so max_specs cannot hide later families."""
+    total_available = sum(len(v) for v in grouped.values())
+    target = total_available if max_specs is None else max(0, min(int(max_specs), total_available))
+    selected: list[StrategySpec] = []
+    cursors = {family: 0 for family in family_order}
+    while len(selected) < target:
+        progressed = False
+        for family in family_order:
+            bucket = grouped.get(family, [])
+            pos = cursors.get(family, 0)
+            if pos >= len(bucket):
+                continue
+            selected.append(bucket[pos])
+            cursors[family] = pos + 1
+            progressed = True
+            if len(selected) >= target:
+                break
+        if not progressed:
+            break
+    return selected
+
+
+def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
+    """Generate explainable candidate specs with balanced family coverage.
+
+    V1/V1.2 sorted specs by family before applying --max-specs, which could make
+    a run of 3000 specs cover only one family. V1.3 deliberately round-robins
+    across families so every enabled family is represented before any one family
+    receives its next variant.
+    """
+    requested_families = [f.strip() for f in str(args.families).split(",") if f.strip()] if args.families else list(DEFAULT_FAMILIES)
+    unknown = sorted(set(requested_families) - set(DEFAULT_FAMILIES))
+    if unknown:
+        raise ValueError(f"Unknown strategy families: {unknown}; supported={DEFAULT_FAMILIES}")
+
+    side_modes = ["both", "long_only", "short_only"] if args.include_side_modes else ["both"]
+    grouped: dict[str, list[StrategySpec]] = {family: [] for family in requested_families}
+
+    def add(family: str, **kwargs: Any) -> None:
+        if family not in grouped:
+            return
+        grouped[family].append(_make_spec(family, args, **kwargs))
+
+    if "trend_pullback_continuation" in grouped:
         for side_mode, fast, slow, min_adx, vol_min, pullback, stop, tp, hold, cooldown in product(
             side_modes,
             [12, 20, 34],
@@ -388,9 +472,8 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
         ):
             if fast >= slow:
                 continue
-            specs.append(_make_spec(
+            add(
                 "trend_pullback_continuation",
-                args,
                 side_mode=side_mode,
                 fast_ema=fast,
                 slow_ema=slow,
@@ -411,9 +494,9 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
                 max_hold_bars=hold,
                 cooldown_bars=cooldown,
                 entry_model="trend_pullback_reclaim",
-            ))
+            )
 
-    if "vwap_reversion_regime" in families:
+    if "vwap_reversion_regime" in grouped:
         for side_mode, zwin, zentry, vol_min, stop, tp, hold, cooldown, max_adx in product(
             side_modes,
             [72, 144, 288],
@@ -425,9 +508,8 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
             [0, 3, 6],
             [16.0, 20.0, 24.0],
         ):
-            specs.append(_make_spec(
+            add(
                 "vwap_reversion_regime",
-                args,
                 side_mode=side_mode,
                 fast_ema=20,
                 slow_ema=89,
@@ -448,12 +530,12 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
                 max_hold_bars=hold,
                 cooldown_bars=cooldown,
                 entry_model="vwap_extreme_reversal_in_chop",
-            ))
+            )
 
-    if "breakout_retest_continuation" in families:
+    if "breakout_retest_continuation" in grouped:
         for side_mode, lb, retest_atr, min_adx, vol_min, stop, tp, hold, cooldown in product(
             side_modes,
-            [24, 48, 72, 96],
+            [24, 48, 72, 96, 144],
             [0.2, 0.4, 0.7, 1.0],
             [12.0, 16.0, 20.0],
             [0.0, 1.0, 1.3],
@@ -462,9 +544,8 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
             [24, 48, 96],
             [0, 3, 6],
         ):
-            specs.append(_make_spec(
+            add(
                 "breakout_retest_continuation",
-                args,
                 side_mode=side_mode,
                 fast_ema=20,
                 slow_ema=89,
@@ -485,9 +566,9 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
                 max_hold_bars=hold,
                 cooldown_bars=cooldown,
                 entry_model="breakout_retest_not_raw_breakout",
-            ))
+            )
 
-    if "squeeze_expansion_continuation" in families:
+    if "squeeze_expansion_continuation" in grouped:
         for side_mode, swin, min_adx, vol_min, stop, tp, hold, cooldown in product(
             side_modes,
             [72, 96, 144, 288],
@@ -498,9 +579,8 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
             [18, 36, 72],
             [0, 3, 6],
         ):
-            specs.append(_make_spec(
+            add(
                 "squeeze_expansion_continuation",
-                args,
                 side_mode=side_mode,
                 fast_ema=20,
                 slow_ema=89,
@@ -521,15 +601,164 @@ def generate_specs(args: argparse.Namespace) -> list[StrategySpec]:
                 max_hold_bars=hold,
                 cooldown_bars=cooldown,
                 entry_model="squeeze_then_directional_expansion",
-            ))
+            )
 
-    # Stable order for reproducibility.
-    specs = sorted({s.spec_id: s for s in specs}.values(), key=lambda s: (s.family, s.spec_id))
+    if "failed_breakout_reversion" in grouped:
+        for side_mode, lb, wick_need, max_adx, vol_min, stop, tp, hold, cooldown in product(
+            side_modes,
+            [24, 48, 72, 96, 144, 192],
+            [0.35, 0.45, 0.55],
+            [14.0, 18.0, 22.0, 26.0],
+            [0.0, 0.8, 1.1, 1.4],
+            [0.9, 1.3, 1.8, 2.4],
+            [0.55, 0.8, 1.05, 1.35],
+            [6, 12, 24, 48],
+            [0, 3, 6],
+        ):
+            add(
+                "failed_breakout_reversion",
+                side_mode=side_mode,
+                fast_ema=20,
+                slow_ema=89,
+                atr_period=14,
+                adx_period=14,
+                min_adx=0.0,
+                max_adx=max_adx,
+                volume_ratio_min=vol_min,
+                pullback_atr=wick_need,
+                zscore_window=144,
+                zscore_entry=2.0,
+                breakout_lookback=lb,
+                retest_atr=0.4,
+                squeeze_window=144,
+                squeeze_quantile=0.20,
+                stop_atr_mult=stop,
+                tp_r=tp,
+                max_hold_bars=hold,
+                cooldown_bars=cooldown,
+                entry_model="failed_breakout_back_inside_range",
+            )
+
+    if "range_boundary_reversion" in grouped:
+        for side_mode, lb, retest_atr, max_adx, vol_min, stop, tp, hold, cooldown in product(
+            side_modes,
+            [48, 72, 96, 144, 192],
+            [0.15, 0.30, 0.50, 0.80],
+            [14.0, 18.0, 22.0, 26.0],
+            [0.0, 0.8, 1.1],
+            [0.9, 1.3, 1.8, 2.4],
+            [0.55, 0.8, 1.05, 1.35],
+            [6, 12, 24, 48],
+            [0, 3, 6],
+        ):
+            add(
+                "range_boundary_reversion",
+                side_mode=side_mode,
+                fast_ema=20,
+                slow_ema=89,
+                atr_period=14,
+                adx_period=14,
+                min_adx=0.0,
+                max_adx=max_adx,
+                volume_ratio_min=vol_min,
+                pullback_atr=0.0,
+                zscore_window=144,
+                zscore_entry=1.5,
+                breakout_lookback=lb,
+                retest_atr=retest_atr,
+                squeeze_window=144,
+                squeeze_quantile=0.20,
+                stop_atr_mult=stop,
+                tp_r=tp,
+                max_hold_bars=hold,
+                cooldown_bars=cooldown,
+                entry_model="range_edge_reversion_to_mid",
+            )
+
+    if "bollinger_reversion_regime" in grouped:
+        for side_mode, zwin, zentry, max_adx, vol_min, stop, tp, hold, cooldown in product(
+            side_modes,
+            [48, 72, 96, 144, 288],
+            [1.5, 2.0, 2.5, 3.0],
+            [14.0, 18.0, 22.0, 26.0],
+            [0.0, 0.8, 1.1],
+            [0.9, 1.3, 1.8, 2.4],
+            [0.55, 0.8, 1.05, 1.35],
+            [6, 12, 24, 48],
+            [0, 3, 6],
+        ):
+            add(
+                "bollinger_reversion_regime",
+                side_mode=side_mode,
+                fast_ema=20,
+                slow_ema=89,
+                atr_period=14,
+                adx_period=14,
+                min_adx=0.0,
+                max_adx=max_adx,
+                volume_ratio_min=vol_min,
+                pullback_atr=0.0,
+                zscore_window=zwin,
+                zscore_entry=zentry,
+                breakout_lookback=96,
+                retest_atr=0.4,
+                squeeze_window=144,
+                squeeze_quantile=0.20,
+                stop_atr_mult=stop,
+                tp_r=tp,
+                max_hold_bars=hold,
+                cooldown_bars=cooldown,
+                entry_model="bollinger_extreme_reclaim_in_chop",
+            )
+
+    if "trend_pullback_reversion" in grouped:
+        for side_mode, fast, slow, zwin, zentry, pullback, min_adx, vol_min, stop, tp, hold, cooldown in product(
+            side_modes,
+            [20, 34],
+            [89, 144, 200],
+            [72, 144, 288],
+            [1.0, 1.5, 2.0],
+            [0.5, 0.9, 1.3],
+            [10.0, 14.0, 18.0],
+            [0.0, 0.8, 1.1],
+            [0.9, 1.3, 1.8, 2.4],
+            [0.65, 0.9, 1.2, 1.6],
+            [12, 24, 48],
+            [0, 3, 6],
+        ):
+            if fast >= slow:
+                continue
+            add(
+                "trend_pullback_reversion",
+                side_mode=side_mode,
+                fast_ema=fast,
+                slow_ema=slow,
+                atr_period=14,
+                adx_period=14,
+                min_adx=min_adx,
+                max_adx=80.0,
+                volume_ratio_min=vol_min,
+                pullback_atr=pullback,
+                zscore_window=zwin,
+                zscore_entry=zentry,
+                breakout_lookback=96,
+                retest_atr=0.4,
+                squeeze_window=144,
+                squeeze_quantile=0.20,
+                stop_atr_mult=stop,
+                tp_r=tp,
+                max_hold_bars=hold,
+                cooldown_bars=cooldown,
+                entry_model="trend_direction_pullback_mean_reversion",
+            )
+
+    for family, bucket in grouped.items():
+        grouped[family] = sorted({s.spec_id: s for s in bucket}.values(), key=lambda s: s.spec_id)
+
+    max_specs = int(args.max_specs) if args.max_specs is not None else None
     if args.fast:
-        specs = specs[: min(len(specs), 300)]
-    if args.max_specs is not None:
-        specs = specs[: max(0, int(args.max_specs))]
-    return specs
+        max_specs = min(max_specs if max_specs is not None else 300, 300)
+    return _round_robin_specs(grouped, requested_families, max_specs)
 
 
 # -----------------------------------------------------------------------------
@@ -616,6 +845,72 @@ def build_signal(features: pd.DataFrame, spec: StrategySpec, ctx_prefix: str) ->
             & (close < low.shift(1))
             & (features["body_pct"] >= 0.45)
             & (features["close_pos"] <= 0.35)
+        )
+    elif spec.family == "failed_breakout_reversion":
+        ph = _num(features, f"prior_high_{spec.breakout_lookback}", np.nan)
+        pl = _num(features, f"prior_low_{spec.breakout_lookback}", np.nan)
+        wick_need = float(spec.pullback_atr)
+        long_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (low < pl)
+            & (close > pl)
+            & (features["lower_wick_pct"] >= wick_need)
+            & (features["close_pos"] >= 0.55)
+        )
+        short_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (high > ph)
+            & (close < ph)
+            & (features["upper_wick_pct"] >= wick_need)
+            & (features["close_pos"] <= 0.45)
+        )
+    elif spec.family == "range_boundary_reversion":
+        ph = _num(features, f"prior_high_{spec.breakout_lookback}", np.nan)
+        pl = _num(features, f"prior_low_{spec.breakout_lookback}", np.nan)
+        long_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (low <= pl + spec.retest_atr * atr_v)
+            & (close > pl)
+            & (features["close_pos"] >= 0.55)
+            & (close > open_)
+        )
+        short_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (high >= ph - spec.retest_atr * atr_v)
+            & (close < ph)
+            & (features["close_pos"] <= 0.45)
+            & (close < open_)
+        )
+    elif spec.family == "bollinger_reversion_regime":
+        z = _num(features, f"boll_z_{spec.zscore_window}", np.nan)
+        rsi14 = _num(features, "rsi14", 50.0)
+        long_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (z <= -spec.zscore_entry)
+            & (rsi14 <= 38.0)
+            & (features["close_pos"] >= 0.50)
+        )
+        short_setup = (
+            htf_choppy & adx_ok & vol_ok
+            & (z >= spec.zscore_entry)
+            & (rsi14 >= 62.0)
+            & (features["close_pos"] <= 0.50)
+        )
+    elif spec.family == "trend_pullback_reversion":
+        z = _num(features, f"vwap_z{spec.zscore_window}", np.nan)
+        long_setup = (
+            htf_up & adx_ok & vol_ok
+            & (fast > slow)
+            & ((z <= -spec.zscore_entry) | (low <= fast - spec.pullback_atr * atr_v))
+            & (close > open_)
+            & (features["close_pos"] >= 0.55)
+        )
+        short_setup = (
+            htf_down & adx_ok & vol_ok
+            & (fast < slow)
+            & ((z >= spec.zscore_entry) | (high >= fast + spec.pullback_atr * atr_v))
+            & (close < open_)
+            & (features["close_pos"] <= 0.45)
         )
     else:
         long_setup = _bool_series(idx)
@@ -1134,7 +1429,8 @@ def build_scoreboard(summary: pd.DataFrame, yearly: pd.DataFrame, stress: pd.Dat
     return out.sort_values(["candidate_state_rank", "follower_score", "profit_factor", "total_return_pct"], ascending=[True, False, False, False]).reset_index(drop=True)
 
 
-def run_stress_cases(features: pd.DataFrame, specs_by_id: dict[str, StrategySpec], base_scoreboard: pd.DataFrame, cfg: BacktestConfig, *, ctx_prefix: str, trade_start: pd.Timestamp, trade_end: pd.Timestamp, top_n: int, progress_enabled: bool = True, progress_every: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_stress_cases(features: pd.DataFrame, specs_by_id: dict[str, StrategySpec], base_scoreboard: pd.DataFrame, cfg: BacktestConfig, *, ctx_prefix: str, trade_start: pd.Timestamp, trade_end: pd.Timestamp, top_n: int, progress_enabled: bool = True, progress_every: int = 1) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run stress cases for the top-ranked specs with per-case progress."""
     if base_scoreboard.empty or top_n <= 0:
         return pd.DataFrame(), pd.DataFrame()
     top_ids = base_scoreboard.sort_values("follower_score", ascending=False)["spec_id"].head(top_n).tolist()
@@ -1154,10 +1450,29 @@ def run_stress_cases(features: pd.DataFrame, specs_by_id: dict[str, StrategySpec
         for spec_id in top_ids:
             spec = specs_by_id[spec_id]
             trades, equity, _audit = run_one_spec(features, spec, scfg, ctx_prefix=ctx_prefix, trade_start=trade_start, trade_end=trade_end)
-            rows.append(summarize_spec(spec, trades, equity, scfg.initial_capital, trade_start, trade_end, scenario=scenario, extra={"fee_rate": scfg.fee_rate, "slippage_pct": scfg.slippage_pct, "delay_bars": scfg.delay_bars}))
+            rows.append(
+                summarize_spec(
+                    spec,
+                    trades,
+                    equity,
+                    scfg.initial_capital,
+                    trade_start,
+                    trade_end,
+                    scenario=scenario,
+                    extra={"fee_rate": scfg.fee_rate, "slippage_pct": scfg.slippage_pct, "delay_bars": scfg.delay_bars},
+                )
+            )
             yearly_rows.extend(yearly_metrics(trades, scfg.initial_capital, spec, scenario=scenario))
             stress_done += 1
-            _progress_update("[stress]", stress_done, stress_total, stress_started, every=progress_every, enabled=progress_enabled, force=(stress_done == 1 or stress_done == stress_total))
+            if progress_enabled:
+                elapsed = max(0.0, time.perf_counter() - stress_started)
+                rate = stress_done / elapsed if elapsed > 0 else 0.0
+                eta = (stress_total - stress_done) / rate if rate > 0 else float("nan")
+                print(
+                    f"[stress] {stress_done:,}/{stress_total:,} ({stress_done / max(stress_total, 1) * 100:5.1f}%) "
+                    f"scenario={scenario} spec={spec_id} elapsed={_format_seconds(elapsed)} eta={_format_seconds(eta)} rate={rate:.2f}/s",
+                    flush=True,
+                )
     return pd.DataFrame(rows), pd.DataFrame(yearly_rows)
 
 
@@ -1167,12 +1482,12 @@ def run_stress_cases(features: pd.DataFrame, specs_by_id: dict[str, StrategySpec
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Follower-friendly standalone strategy factory V1")
+    p = argparse.ArgumentParser(description="Follower-friendly standalone strategy factory V1.3")
     p.add_argument("--symbol", default=DEFAULT_SYMBOL)
     p.add_argument("--start-date", default=DEFAULT_START_DATE)
     p.add_argument("--end-date", default=DEFAULT_END_DATE)
     p.add_argument("--warmup-start-date", default=DEFAULT_WARMUP_START_DATE)
-    p.add_argument("--data-source", default="ohlcv", choices=["ohlcv"], help="V1.2 uses normal OKX OHLCV only. trade_bar/range_bar/footprint are planned for V2.")
+    p.add_argument("--data-source", default="ohlcv", choices=["ohlcv"], help="V1.3 uses normal OKX OHLCV only. trade_bar/range_bar/footprint are planned for V2.")
     p.add_argument("--primary-timeframe", default="5m", choices=["1m", "5m", "15m"])
     p.add_argument("--context-timeframe", default="1H", choices=["15m", "1H", "4H"])
     p.add_argument("--extra-context-timeframe", default=None, choices=[None, "1H", "4H"])
@@ -1185,12 +1500,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--include-side-modes", action="store_true", help="Also generate long_only/short_only variants. Default only both.")
     p.add_argument("--max-specs", type=int, default=1000)
     p.add_argument("--fast", action="store_true", help="Limit to a small deterministic batch for quick sanity checks.")
-    p.add_argument("--stress-top-n", type=int, default=50)
+    p.add_argument("--stress-top-n", type=int, default=1)
     p.add_argument("--write-top-trades", action="store_true")
     p.add_argument("--top-trades-n", type=int, default=30)
-    p.add_argument("--progress-every", type=int, default=25, help="Update progress every N specs/cases. Default: 25.")
-    p.add_argument("--no-progress", action="store_true", help="Disable progress bar/log updates.")
-    p.add_argument("--out-dir", default="data/reports/research/follower_friendly_strategy_factory_v1")
+    p.add_argument("--out-dir", default="data/reports/research/follower_friendly_strategy_factory_v1_3")
     return p.parse_args()
 
 
@@ -1205,14 +1518,18 @@ def main() -> None:
     primary = build_primary_features(frames[args.primary_timeframe])
     ctx_prefix = "ctx"
     ctx = build_context_features(frames[args.context_timeframe], args.context_timeframe, ctx_prefix)
-    features = causal_merge_context(primary, ctx)
+    features = causal_merge_context(primary, ctx, args.context_timeframe)
     features = features.dropna(subset=["open", "high", "low", "close"]).copy()
 
     specs = generate_specs(args)
     if not specs:
         raise RuntimeError("No specs generated. Check --families/--max-specs.")
     print(f"[factory] generated_specs={len(specs):,}; banned_baselines={sorted(BANNED_BASELINES)}", flush=True)
-    pd.DataFrame([asdict(s) for s in specs]).to_csv(out_dir / "01_spec_manifest.csv", index=False, encoding="utf-8-sig")
+    spec_manifest = pd.DataFrame([asdict(s) for s in specs])
+    family_counts = spec_manifest["family"].value_counts().rename_axis("family").reset_index(name="spec_count")
+    print("[factory] family coverage:\n" + family_counts.to_string(index=False), flush=True)
+    spec_manifest.to_csv(out_dir / "01_spec_manifest.csv", index=False, encoding="utf-8-sig")
+    family_counts.to_csv(out_dir / "01_family_counts.csv", index=False, encoding="utf-8-sig")
 
     cfg = BacktestConfig(
         symbol=args.symbol,
@@ -1229,7 +1546,8 @@ def main() -> None:
     top_trade_parts: list[pd.DataFrame] = []
     specs_by_id = {s.spec_id: s for s in specs}
 
-    progress_enabled = not bool(args.no_progress)
+    progress_enabled = True
+    progress_every = 25
     factory_started = time.perf_counter()
     for n, spec in enumerate(specs, start=1):
         trades, equity, audit = run_one_spec(features, spec, cfg, ctx_prefix=ctx_prefix, trade_start=trade_start, trade_end=trade_end)
@@ -1242,7 +1560,7 @@ def main() -> None:
             audit_parts.append(audit.head(200))
         if args.write_top_trades and not audit.empty:
             top_trade_parts.append(audit)
-        _progress_update("[factory]", n, len(specs), factory_started, every=args.progress_every, enabled=progress_enabled, force=(n == 1 or n == len(specs)))
+        _progress_update("[factory]", n, len(specs), factory_started, every=progress_every, enabled=progress_enabled, force=(n == 1 or n == len(specs)))
 
     summary_df = pd.DataFrame(summary_rows)
     yearly_df = pd.DataFrame(yearly_rows)
@@ -1250,7 +1568,7 @@ def main() -> None:
     yearly_df.to_csv(out_dir / "03_base_yearly.csv", index=False, encoding="utf-8-sig")
 
     rough_score = build_scoreboard(summary_df, yearly_df, pd.DataFrame())
-    stress_df, stress_yearly_df = run_stress_cases(features, specs_by_id, rough_score, cfg, ctx_prefix=ctx_prefix, trade_start=trade_start, trade_end=trade_end, top_n=args.stress_top_n, progress_enabled=progress_enabled, progress_every=max(1, min(args.progress_every, 10)))
+    stress_df, stress_yearly_df = run_stress_cases(features, specs_by_id, rough_score, cfg, ctx_prefix=ctx_prefix, trade_start=trade_start, trade_end=trade_end, top_n=args.stress_top_n, progress_enabled=progress_enabled, progress_every=1)
     stress_df.to_csv(out_dir / "04_stress_summary.csv", index=False, encoding="utf-8-sig")
     stress_yearly_df.to_csv(out_dir / "05_stress_yearly.csv", index=False, encoding="utf-8-sig")
 
@@ -1275,6 +1593,7 @@ def main() -> None:
         "causal_alignment": "context index = bar_start_time + timeframe_delta; merge_asof backward; signal close -> next open execution",
         "outputs": [
             "01_spec_manifest.csv",
+            "01_family_counts.csv",
             "02_base_summary.csv",
             "03_base_yearly.csv",
             "04_stress_summary.csv",
@@ -1287,7 +1606,7 @@ def main() -> None:
     (out_dir / "00_factory_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     print("\n" + "=" * 100)
-    print("Follower-Friendly Strategy Factory V1 complete")
+    print("Follower-Friendly Strategy Factory V1.3 complete")
     print("=" * 100)
     print(f"Output directory: {out_dir.resolve()}")
     if not scoreboard.empty:

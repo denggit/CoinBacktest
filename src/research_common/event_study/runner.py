@@ -13,6 +13,7 @@ from .causal import audit_context_available_times, audit_next_open_entries, ensu
 from .models import EventStudyConfig, EventStudyResult
 from .outcomes import cost_adjust_return, normalize_side
 from .stats import summarize_many
+from src.research_common.progress import ProgressReporter
 
 _REQUIRED_BAR_COLS = ("open", "high", "low", "close")
 
@@ -103,32 +104,37 @@ def _attach_mfe_mae_labels(frame: pd.DataFrame, enriched: pd.DataFrame, cfg: Eve
     opens = pd.to_numeric(frame["open"], errors="coerce").to_numpy(dtype=float)
     h = int(cfg.mfe_mae_horizon)
     delay = int(cfg.entry_delay_bars)
-    for row_idx, row in valid.iterrows():
+    progress = ProgressReporter(
+        label="[event-study] MFE/MAE",
+        total=len(valid),
+        every=int(cfg.progress_every),
+        enabled=bool(int(cfg.progress_every) > 0),
+    )
+    for done, (row_idx, row) in enumerate(valid.iterrows(), start=1):
         pos = int(row["signal_bar_pos"])
         side = int(row["side"])
         entry_pos = pos + delay
-        if entry_pos >= len(frame):
-            continue
-        end = min(len(frame), pos + h + 1)
-        if end <= entry_pos:
-            continue
-        entry = opens[entry_pos]
-        if not np.isfinite(entry) or entry <= 0:
-            continue
-        high_path = highs[entry_pos:end]
-        low_path = lows[entry_pos:end]
-        if side == 1:
-            path_high = np.nanmax(high_path) if high_path.size else np.nan
-            path_low = np.nanmin(low_path) if low_path.size else np.nan
-            mfe = path_high / entry - 1.0 if np.isfinite(path_high) else np.nan
-            mae = path_low / entry - 1.0 if np.isfinite(path_low) else np.nan
-        else:
-            path_low = np.nanmin(low_path) if low_path.size else np.nan
-            path_high = np.nanmax(high_path) if high_path.size else np.nan
-            mfe = entry / path_low - 1.0 if np.isfinite(path_low) and path_low > 0 else np.nan
-            mae = entry / path_high - 1.0 if np.isfinite(path_high) and path_high > 0 else np.nan
-        out.loc[row_idx, mfe_col] = mfe
-        out.loc[row_idx, mae_col] = mae
+        if entry_pos < len(frame):
+            end = min(len(frame), pos + h + 1)
+            if end > entry_pos:
+                entry = opens[entry_pos]
+                if np.isfinite(entry) and entry > 0:
+                    high_path = highs[entry_pos:end]
+                    low_path = lows[entry_pos:end]
+                    if side == 1:
+                        path_high = np.nanmax(high_path) if high_path.size else np.nan
+                        path_low = np.nanmin(low_path) if low_path.size else np.nan
+                        mfe = path_high / entry - 1.0 if np.isfinite(path_high) else np.nan
+                        mae = path_low / entry - 1.0 if np.isfinite(path_low) else np.nan
+                    else:
+                        path_low = np.nanmin(low_path) if low_path.size else np.nan
+                        path_high = np.nanmax(high_path) if high_path.size else np.nan
+                        mfe = entry / path_low - 1.0 if np.isfinite(path_low) and path_low > 0 else np.nan
+                        mae = entry / path_high - 1.0 if np.isfinite(path_high) and path_high > 0 else np.nan
+                    out.loc[row_idx, mfe_col] = mfe
+                    out.loc[row_idx, mae_col] = mae
+        progress.update(done)
+    progress.close()
     return out
 
 

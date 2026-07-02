@@ -1,4 +1,4 @@
-# Follower-Friendly Strategy Factory V1.2
+# Follower-Friendly Strategy Factory V1.3
 
 这个目录是 **CoinBacktest 里的独立研究引擎**，用于寻找更适合带单展示的 ETH 永续合约子策略。
 
@@ -18,6 +18,14 @@
 - MFE/MAE 结构可优化；
 - fee/slippage/delay 压测后不死；
 - 后续可以作为独立 engine 再考虑加入 portfolio。
+
+## V1.3 重点变化
+
+- 数据加载改为直接使用 `src.data_feed.OKXDataLoader`，对齐 `research/ohlcv_breakout_event_study_lab.py` 的数据入口习惯。
+- 高周期 context 对齐改为复用 `src.research_common.event_study.causal_align_context`。
+- 进度条默认开启，不再提供关闭/间隔参数。
+- `--max-specs` 改为 family 间 round-robin 均衡采样，避免再次出现 3000 个全是某一个 family。
+- 新增均值回归方向：failed breakout、range boundary、Bollinger/VWAP extreme、trend pullback reversion。
 
 ## 运行命令
 
@@ -41,22 +49,12 @@ python research/follower_friendly_strategy_factory/factory_v1.py --families tren
 
 Windows / Unix 都可以直接运行，不需要 `cd` 以外的 shell 特性。
 
-带进度条运行，默认每 25 个 spec 输出一次：
-
-```bash
-python research/follower_friendly_strategy_factory/factory_v1.py --max-specs 3000 --progress-every 25 --write-top-trades
-```
-
-如果日志太多，可以关闭：
-
-```bash
-python research/follower_friendly_strategy_factory/factory_v1.py --max-specs 3000 --no-progress
-```
+进度条默认开启，不需要额外参数；批量研究时会自动显示 factory / stress 进度。
 
 
 ## 速度设计
 
-V1.2 已经做了第一轮提速，适合先跑 5m/15m 独立策略工厂：
+V1.3 已经做了第一轮提速，并修复了 max_specs 截断导致 family 覆盖不足的问题，适合先跑 5m/15m 独立策略工厂：
 
 - 所有 OHLCV 只加载一次；
 - primary/context 指标只预计算一次；
@@ -65,7 +63,7 @@ V1.2 已经做了第一轮提速，适合先跑 5m/15m 独立策略工厂：
 - 回测核心使用 numpy 数组事件循环，不再 per-spec 复制完整 DataFrame；
 - equity 只在资金变化时记录，不再每根 bar 写一行；
 - 默认只抽样写 replay audit，避免全量 trades 输出爆炸；
-- 压测只跑 scoreboard Top N，而不是所有 spec 全压测。
+- 压测默认只跑 scoreboard Top 1，避免第一次大批量研究被 stress 阶段拖慢；需要扩大复核时再显式设置 `--stress-top-n 10` 或更高。
 
 仍然没有做的重优化：
 
@@ -78,7 +76,7 @@ V1.2 已经做了第一轮提速，适合先跑 5m/15m 独立策略工厂：
 
 ## 当前数据源范围
 
-V1.2 当前只使用普通 OKX OHLCV K 线加载器：
+V1.3 当前只使用普通 OKX OHLCV K 线加载器：
 
 ```text
 --data-source ohlcv
@@ -102,13 +100,14 @@ V2 data adapters:
 默认输出目录：
 
 ```text
-data/reports/research/follower_friendly_strategy_factory_v1
+data/reports/research/follower_friendly_strategy_factory_v1_3
 ```
 
 主要文件：
 
 - `00_factory_meta.json`：参数、commit、因果对齐说明。
 - `01_spec_manifest.csv`：所有策略规格。
+- `01_family_counts.csv`：本轮 family 覆盖数量，防止 max_specs 只跑到单一策略族。
 - `02_base_summary.csv`：基础回测汇总。
 - `03_base_yearly.csv`：年度拆分。
 - `04_stress_summary.csv`：fee_2x、slippage_2x、delay_1bar 压测。
