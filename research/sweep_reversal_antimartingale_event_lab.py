@@ -103,6 +103,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-pyramiding-sim", action="store_true", default=True)
     p.add_argument("--no-pyramiding-sim", dest="run_pyramiding_sim", action="store_false")
     p.add_argument("--sim-top-event-names", type=int, default=30)
+    p.add_argument("--sim-min-event-count", type=int, default=100, help="Minimum event-study count required before an event_name is sent to the pyramiding simulator.")
+    p.add_argument("--sim-min-tested-years", type=int, default=3, help="Minimum eligible yearly buckets required before pyramiding simulation.")
+    p.add_argument("--sim-include-noncandidates", action="store_true", help="Allow pyramiding simulation on non-candidate event names. By default only candidate_flag=True rows are simulated.")
     p.add_argument("--max-sim-events-per-name", type=int, default=5000)
     p.add_argument("--max-hold-bars", type=int, default=48)
     p.add_argument("--max-adds", type=int, default=3)
@@ -379,7 +382,12 @@ def attach_first_touch_labels(bars: pd.DataFrame, events: pd.DataFrame, args: ar
         entry_delay_bars=1,
         same_bar_policy="conservative",
     )
-    touch = touch.reset_index().rename(columns={"index": "signal_time"})
+    # first_touch_outcome preserves the bars index name. On local data this is often
+    # named ``timestamp``/``datetime`` rather than None, so reset_index() does not
+    # necessarily create an ``index`` column. Always rename the first reset column
+    # to signal_time to keep this helper index-name agnostic.
+    touch = touch.reset_index()
+    touch = touch.rename(columns={touch.columns[0]: "signal_time"})
     touch["signal_time"] = pd.to_datetime(touch["signal_time"])
     return events.merge(touch, on="signal_time", how="left")
 
@@ -448,6 +456,44 @@ def _fill_entry_price(raw_open: float, side: int, slippage_pct: float) -> float:
 
 def _fill_exit_price(raw_price: float, side: int, slippage_pct: float) -> float:
     return raw_price * (1.0 - slippage_pct) if side > 0 else raw_price * (1.0 + slippage_pct)
+
+
+def select_pyramiding_event_names(candidate_rank: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+    """Select event names worth sending into the slower pyramiding simulator.
+
+    The simulator used to run on the top ranked rows even when candidate_flag=False.
+    That made range-bar reports misleading: tiny 3-8 sample event names could rank high
+    by luck and then produce one-digit trade counts in 18_pyramiding_summary.csv.
+    This selector keeps the simulator aligned with the candidate gate by default.
+    """
+    if candidate_rank.empty:
+        return pd.DataFrame(columns=["event_name", "sim_selected", "sim_skip_reason"])
+
+    out = candidate_rank.copy()
+    min_count = max(int(args.min_count), int(args.sim_min_event_count))
+    min_years = int(args.sim_min_tested_years)
+
+    reasons: list[str] = []
+    selected: list[bool] = []
+    for _, row in out.iterrows():
+        reason_parts = []
+        count = int(row.get("count", 0) or 0)
+        tested_years = int(row.get("tested_years", 0) or 0)
+        candidate_flag = bool(row.get("candidate_flag", False))
+        if count < min_count:
+            reason_parts.append(f"count<{min_count}")
+        if tested_years < min_years:
+            reason_parts.append(f"tested_years<{min_years}")
+        if (not bool(args.sim_include_noncandidates)) and not candidate_flag:
+            reason_parts.append("candidate_flag_false")
+        ok = not reason_parts
+        selected.append(ok)
+        reasons.append("" if ok else ";".join(reason_parts))
+
+    out["sim_selected"] = selected
+    out["sim_skip_reason"] = reasons
+    selected_out = out[out["sim_selected"].astype(bool)].head(int(args.sim_top_event_names)).copy()
+    return selected_out
 
 
 def simulate_pyramiding_group(bars: pd.DataFrame, group_events: pd.DataFrame, args: argparse.Namespace, *, label: str) -> pd.DataFrame:
@@ -676,8 +722,12 @@ def run_lab(args: argparse.Namespace) -> dict[str, object]:
     print("[6/7] Running research pyramiding simulator", flush=True)
     pyramid_trades = pd.DataFrame()
     pyramid_summary = pd.DataFrame()
+    pyramid_selection = pd.DataFrame()
     if bool(args.run_pyramiding_sim) and not candidate_rank.empty:
-        top_names = candidate_rank.head(int(args.sim_top_event_names))["event_name"].dropna().astype(str).tolist()
+        pyramid_selection = select_pyramiding_event_names(candidate_rank, args)
+        top_names = pyramid_selection["event_name"].dropna().astype(str).tolist() if not pyramid_selection.empty else []
+        if not top_names:
+            print("       skipped: no event_name passed the pyramiding selection gate", flush=True)
         sim_parts = []
         for name in top_names:
             part_events = result.events[result.events["event_name"] == name].copy()
@@ -686,6 +736,7 @@ def run_lab(args: argparse.Namespace) -> dict[str, object]:
                 sim_parts.append(sim)
         pyramid_trades = pd.concat(sim_parts, ignore_index=True) if sim_parts else pd.DataFrame()
         pyramid_summary = summarize_pyramiding(pyramid_trades)
+    pyramid_selection.to_csv(out_dir / "16_pyramiding_selection.csv", index=False)
     pyramid_trades.to_csv(out_dir / "17_pyramiding_trades.csv", index=False)
     pyramid_summary.to_csv(out_dir / "18_pyramiding_summary.csv", index=False)
 
@@ -706,8 +757,9 @@ def run_lab(args: argparse.Namespace) -> dict[str, object]:
         "round_trip_cost_pct": float(config.cost.round_trip_cost_pct),
         "candidate_horizon": int(args.candidate_horizon),
         "best_event_candidates": best.to_dict(orient="records"),
+        "pyramiding_selected_event_names": int(len(pyramid_selection)) if not pyramid_selection.empty else 0,
         "best_pyramiding_candidates": best_pyr.to_dict(orient="records"),
-        "notes": "Research-only. Event-study and pyramiding outputs are phenomena diagnostics, not validated strategies.",
+        "notes": "Research-only. Event-study and pyramiding outputs are phenomena diagnostics, not validated strategies. Pyramiding simulation now only uses event names that pass candidate/sample/year gates unless --sim-include-noncandidates is set.",
     }
     _write_json(out_dir / "19_lab_meta.json", meta)
 

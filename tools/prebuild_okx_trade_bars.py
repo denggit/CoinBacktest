@@ -23,13 +23,13 @@ Examples:
       --symbol ETH-USDT-SWAP \
       --start-date 2022-01-01 \
       --end-date 2022-01-31 \
-      --timeframes 1m 5m
+      --timeframes 1s 5s 1m 5m
 
     python tools/prebuild_okx_trade_bars.py \
       --symbol ETH-USDT-SWAP \
       --start-date 2022-01-01 \
       --end-date 2022-12-31 \
-      --timeframes 1m \
+      --timeframes 1s \
       --chunksize 500000 \
       --large-trade-notional-threshold 100000
 """
@@ -67,7 +67,7 @@ except Exception:  # pragma: no cover
         logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
 
-SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "30m", "1H", "4H", "1D")
+SUPPORTED_TIMEFRAMES_HELP = "1s 5s 10s 15s 30s 1m 5m 15m 30m 1H 4H 1D"
 
 
 @dataclass
@@ -94,8 +94,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--timeframes",
         nargs="+",
         default=["1m", "5m"],
-        choices=SUPPORTED_TIMEFRAMES,
-        help="One or more target bar timeframes.",
+        help=(
+            "One or more target bar timeframes. Supports positive integer second/minute/hour/day "
+            f"bars, e.g. {SUPPORTED_TIMEFRAMES_HELP}."
+        ),
     )
     p.add_argument("--data-dir", type=Path, default=None, help="Project data directory. Default: <project>/data.")
     p.add_argument("--db-name", default="okx_trade_bars.db", help="SQLite DB filename under data-dir.")
@@ -171,6 +173,7 @@ def merge_partial_bars(partials: list[pd.DataFrame]) -> pd.DataFrame:
             "trades_count": grouped["trades_count"].sum(),
             "buy_volume": grouped["buy_volume"].sum(),
             "sell_volume": grouped["sell_volume"].sum(),
+            "notional": grouped["notional"].sum(),
             "buy_notional": grouped["buy_notional"].sum(),
             "sell_notional": grouped["sell_notional"].sum(),
             "buy_trades_count": grouped["buy_trades_count"].sum(),
@@ -178,7 +181,11 @@ def merge_partial_bars(partials: list[pd.DataFrame]) -> pd.DataFrame:
             "price_size_sum": grouped["price_size_sum"].sum(),
             "large_buy_notional": grouped["large_buy_notional"].sum(),
             "large_sell_notional": grouped["large_sell_notional"].sum(),
+            "large_buy_trades_count": grouped["large_buy_trades_count"].sum(),
+            "large_sell_trades_count": grouped["large_sell_trades_count"].sum(),
             "large_trades_count": grouped["large_trades_count"].sum(),
+            "max_trade_notional": grouped["max_trade_notional"].max(),
+            "max_trade_size": grouped["max_trade_size"].max(),
         }
     )
 

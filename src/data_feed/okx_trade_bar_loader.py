@@ -5,11 +5,12 @@
 This module is the bridge between raw OKX trades files and strategy-friendly bar
 features:
 
-- DB first: read aggregated bars from ``data/okx_trade_bars.db``.
-- Raw ZIP second: if DB coverage is missing, read local
-  ``data/okx/raw/trades/<symbol>/<symbol>-trades-YYYY-MM-DD.zip``.
-- Lazy download: if the raw ZIP is missing, reuse ``OKXTickLoader`` to download
-  the official OKX daily trades ZIP.
+- Cache-first by default: strategy-facing reads come from ``data/okx_trade_bars.db``
+  when the requested UTC days are already covered.
+- Missing-day build: only genuinely missing UTC coverage triggers raw trades
+  download/aggregation before the DB read.
+- Schema/feature migrations never force a rebuild by themselves; new columns are
+  added with defaults and can be backfilled explicitly with force rebuild.
 - Memory safe: aggregation is done one UTC day at a time.
 - Interface style: close to ``OKXDataLoader.fetch_data_by_date_range``.
 
@@ -30,7 +31,7 @@ import sqlite3
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Iterator
 
 import pandas as pd
 
@@ -54,8 +55,8 @@ except Exception:  # pragma: no cover - standalone fallback
         logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
 
-Timeframe = Literal["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
-CVDMode = Literal["range", "db"]
+Timeframe = str
+CVDMode = str
 
 
 class OKXTradeBarLoader:
@@ -66,7 +67,8 @@ class OKXTradeBarLoader:
     symbol:
         OKX instrument id, e.g. ``ETH-USDT-SWAP``.
     timeframe:
-        Target bar timeframe. Common values: ``1m`` and ``5m``.
+        Target bar timeframe. Supports second/minute/hour/day bars such as
+        ``1s``, ``5s``, ``30s``, ``1m``, ``5m``, ``1H`` and ``1D``.
     data_dir:
         Project data directory. Defaults to ``<project_root>/data``.
     db_name:
@@ -87,7 +89,17 @@ class OKXTradeBarLoader:
         as naive datetimes, matching ``OKXDataLoader``. If False, use UTC-naive.
     """
 
+    CACHE_SCHEMA_VERSION = 2
+
+    # Common presets kept for help text/backward compatibility. The loader is
+    # intentionally not limited to these values; any positive integer
+    # second/minute/hour/day timeframe such as 1s, 5s, 10s, 30s, 1m, 2H is valid.
     FREQ_MAP: dict[str, str] = {
+        "1s": "1s",
+        "5s": "5s",
+        "10s": "10s",
+        "15s": "15s",
+        "30s": "30s",
         "1m": "1min",
         "5m": "5min",
         "15m": "15min",
@@ -106,6 +118,7 @@ class OKXTradeBarLoader:
         "trades_count",
         "buy_volume",
         "sell_volume",
+        "notional",
         "buy_notional",
         "sell_notional",
         "buy_trades_count",
@@ -119,8 +132,12 @@ class OKXTradeBarLoader:
         "vwap",
         "large_buy_notional",
         "large_sell_notional",
+        "large_buy_trades_count",
+        "large_sell_trades_count",
         "large_delta_notional",
         "large_trades_count",
+        "max_trade_notional",
+        "max_trade_size",
     ]
 
     def __init__(
@@ -135,9 +152,8 @@ class OKXTradeBarLoader:
         align_with_okx_loader_timezone: bool = True,
     ):
         self.symbol = symbol
-        self.timeframe = timeframe
-        if timeframe not in self.FREQ_MAP:
-            raise IndexError(f"没有这个timeframe: {timeframe}. 支持: {sorted(self.FREQ_MAP)}")
+        self.timeframe = self._normalize_timeframe(timeframe)
+        self.freq = self._freq_from_timeframe(self.timeframe)
 
         self.project_root = Path(__file__).resolve().parents[2]
         self.data_dir = Path(data_dir) if data_dir else self.project_root / "data"
@@ -171,11 +187,16 @@ class OKXTradeBarLoader:
         chunksize: int = 300_000,
         force_rebuild: bool = False,
         cvd_mode: CVDMode = "range",
+        build_missing: bool = True,
     ) -> pd.DataFrame:
         """Return trade-aggregated bars for ``[start_date, end_date]``.
 
-        This is the main strategy-facing interface. It ensures DB coverage first,
-        then slices and returns the requested range.
+        This is the main strategy-facing interface. It is cache-first by
+        default: existing covered UTC days are read from SQLite, while genuinely
+        missing UTC days are downloaded/aggregated before the read. Schema
+        upgrades, added feature columns, or older coverage metadata do not force
+        rebuilds by themselves. Pass ``build_missing=False`` for a pure DB read,
+        or ``force_rebuild=True`` for explicit backfill/rebuild.
 
         ``cvd_mode``:
         - ``range``: CVD starts from zero at ``start_date``. Best for isolated
@@ -190,8 +211,9 @@ class OKXTradeBarLoader:
         if cvd_mode not in {"range", "db"}:
             raise ValueError("cvd_mode must be 'range' or 'db'")
 
-        required_utc_days = list(self._required_utc_days_for_local_range(start_ts, end_ts))
-        self.ensure_cached_days(required_utc_days, chunksize=chunksize, force_rebuild=force_rebuild)
+        if build_missing or force_rebuild:
+            required_utc_days = list(self._required_utc_days_for_local_range(start_ts, end_ts))
+            self.ensure_cached_days(required_utc_days, chunksize=chunksize, force_rebuild=force_rebuild)
 
         if cvd_mode == "db":
             df = self.load_local_data(end_date=end_ts)
@@ -213,11 +235,13 @@ class OKXTradeBarLoader:
         chunksize: int = 300_000,
         force_rebuild: bool = False,
         cvd_mode: CVDMode = "range",
+        build_missing: bool = True,
     ) -> pd.DataFrame:
-        """Return the latest ``limit`` cached/aggregated bars ending at ``end_date``.
+        """Return the latest ``limit`` cached bars ending at ``end_date``.
 
-        This method mirrors ``OKXDataLoader.fetch_historical_data(limit=...)`` but
-        is date-derived internally because raw official trades are daily files.
+        By default this is cache-first and will build only missing UTC coverage.
+        Pass ``build_missing=False`` for a pure DB read, or ``force_rebuild=True``
+        for explicit backfill/rebuild.
         """
         if limit <= 0:
             return pd.DataFrame(columns=self.BASE_COLUMNS)
@@ -232,6 +256,7 @@ class OKXTradeBarLoader:
             chunksize=chunksize,
             force_rebuild=force_rebuild,
             cvd_mode=cvd_mode,
+            build_missing=build_missing,
         )
         return df.tail(limit)
 
@@ -373,9 +398,11 @@ class OKXTradeBarLoader:
         df["large_buy_notional"] = df["notional"].where(is_large & is_buy, 0.0)
         df["large_sell_notional"] = df["notional"].where(is_large & is_sell, 0.0)
         df["large_trades_count"] = is_large.astype("int64")
+        df["large_buy_trades_count"] = (is_large & is_buy).astype("int64")
+        df["large_sell_trades_count"] = (is_large & is_sell).astype("int64")
 
         df = df.sort_values("timestamp").set_index("timestamp")
-        grouped = df.resample(self.FREQ_MAP[self.timeframe], label="left", closed="left")
+        grouped = df.resample(self.freq, label="left", closed="left")
         partial = pd.DataFrame(
             {
                 "open": grouped["price"].first(),
@@ -386,6 +413,7 @@ class OKXTradeBarLoader:
                 "trades_count": grouped["price"].count(),
                 "buy_volume": grouped["buy_volume"].sum(),
                 "sell_volume": grouped["sell_volume"].sum(),
+                "notional": grouped["notional"].sum(),
                 "buy_notional": grouped["buy_notional"].sum(),
                 "sell_notional": grouped["sell_notional"].sum(),
                 "buy_trades_count": grouped["buy_trades_count"].sum(),
@@ -393,7 +421,11 @@ class OKXTradeBarLoader:
                 "price_size_sum": grouped["price_size"].sum(),
                 "large_buy_notional": grouped["large_buy_notional"].sum(),
                 "large_sell_notional": grouped["large_sell_notional"].sum(),
+                "large_buy_trades_count": grouped["large_buy_trades_count"].sum(),
+                "large_sell_trades_count": grouped["large_sell_trades_count"].sum(),
                 "large_trades_count": grouped["large_trades_count"].sum(),
+                "max_trade_notional": grouped["notional"].max(),
+                "max_trade_size": grouped["size"].max(),
             }
         )
         return partial.dropna(subset=["open", "high", "low", "close"])
@@ -411,6 +443,7 @@ class OKXTradeBarLoader:
                 "trades_count": grouped["trades_count"].sum(),
                 "buy_volume": grouped["buy_volume"].sum(),
                 "sell_volume": grouped["sell_volume"].sum(),
+                "notional": grouped["notional"].sum(),
                 "buy_notional": grouped["buy_notional"].sum(),
                 "sell_notional": grouped["sell_notional"].sum(),
                 "buy_trades_count": grouped["buy_trades_count"].sum(),
@@ -418,7 +451,11 @@ class OKXTradeBarLoader:
                 "price_size_sum": grouped["price_size_sum"].sum(),
                 "large_buy_notional": grouped["large_buy_notional"].sum(),
                 "large_sell_notional": grouped["large_sell_notional"].sum(),
+                "large_buy_trades_count": grouped["large_buy_trades_count"].sum(),
+                "large_sell_trades_count": grouped["large_sell_trades_count"].sum(),
                 "large_trades_count": grouped["large_trades_count"].sum(),
+                "max_trade_notional": grouped["max_trade_notional"].max(),
+                "max_trade_size": grouped["max_trade_size"].max(),
             }
         )
         if bars.empty:
@@ -484,10 +521,11 @@ class OKXTradeBarLoader:
         df["large_buy_notional"] = df["notional"].where(is_large & is_buy, 0.0)
         df["large_sell_notional"] = df["notional"].where(is_large & is_sell, 0.0)
         df["large_trades_count"] = is_large.astype("int64")
+        df["large_buy_trades_count"] = (is_large & is_buy).astype("int64")
+        df["large_sell_trades_count"] = (is_large & is_sell).astype("int64")
 
         df = df.sort_values("timestamp").set_index("timestamp")
-        freq = self.FREQ_MAP[self.timeframe]
-        grouped = df.resample(freq, label="left", closed="left")
+        grouped = df.resample(self.freq, label="left", closed="left")
 
         bars = pd.DataFrame(
             {
@@ -499,6 +537,7 @@ class OKXTradeBarLoader:
                 "trades_count": grouped["price"].count(),
                 "buy_volume": grouped["buy_volume"].sum(),
                 "sell_volume": grouped["sell_volume"].sum(),
+                "notional": grouped["notional"].sum(),
                 "buy_notional": grouped["buy_notional"].sum(),
                 "sell_notional": grouped["sell_notional"].sum(),
                 "buy_trades_count": grouped["buy_trades_count"].sum(),
@@ -506,7 +545,11 @@ class OKXTradeBarLoader:
                 "price_size_sum": grouped["price_size"].sum(),
                 "large_buy_notional": grouped["large_buy_notional"].sum(),
                 "large_sell_notional": grouped["large_sell_notional"].sum(),
+                "large_buy_trades_count": grouped["large_buy_trades_count"].sum(),
+                "large_sell_trades_count": grouped["large_sell_trades_count"].sum(),
                 "large_trades_count": grouped["large_trades_count"].sum(),
+                "max_trade_notional": grouped["notional"].max(),
+                "max_trade_size": grouped["size"].max(),
             }
         )
 
@@ -589,7 +632,9 @@ class OKXTradeBarLoader:
         """Delete this loader's cached bars and coverage records."""
         with self._get_db_connection() as conn:
             conn.execute(f"DELETE FROM {self.table_name}")
-            conn.execute(f"DELETE FROM {self.coverage_table_name} WHERE cache_key = ?", (self._cache_key(),))
+            keys = tuple(self._compatible_cache_keys())
+            placeholders = ",".join(["?"] * len(keys))
+            conn.execute(f"DELETE FROM {self.coverage_table_name} WHERE cache_key IN ({placeholders})", keys)
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -614,6 +659,7 @@ class OKXTradeBarLoader:
                 )
                 """
             )
+            self._ensure_bar_table_columns(conn)
             conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self.coverage_table_name} (
@@ -631,6 +677,15 @@ class OKXTradeBarLoader:
                 """
             )
             conn.commit()
+
+
+    def _ensure_bar_table_columns(self, conn: sqlite3.Connection) -> None:
+        """Migrate existing trade-bar tables when new feature columns are added."""
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({self.table_name})").fetchall()}
+        for col in self.BASE_COLUMNS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {self.table_name} ADD COLUMN {col} REAL NOT NULL DEFAULT 0")
+                existing.add(col)
 
     def _upsert_bars(self, df: pd.DataFrame) -> None:
         if df.empty:
@@ -663,10 +718,25 @@ class OKXTradeBarLoader:
         return clean[["timestamp", *self.BASE_COLUMNS]]
 
     def _has_coverage(self, utc_day: date) -> bool:
+        """Return True when the UTC raw-trade day is already cached.
+
+        Coverage is intentionally based on the physical cached day, not on the
+        feature/schema version. Adding columns such as max_trade_notional should
+        not make normal reads rebuild every old day. If the day is not covered,
+        normal cache-first reads still build/download it via ensure_cached_days.
+        """
+        d = self._parse_date(utc_day)
+        keys = tuple(self._compatible_cache_keys())
+        placeholders = ",".join(["?"] * len(keys))
         with self._get_db_connection() as conn:
             row = conn.execute(
-                f"SELECT rows FROM {self.coverage_table_name} WHERE cache_key = ? AND utc_day = ?",
-                (self._cache_key(), utc_day.isoformat()),
+                f"""
+                SELECT rows
+                FROM {self.coverage_table_name}
+                WHERE utc_day = ? AND cache_key IN ({placeholders})
+                LIMIT 1
+                """,
+                (d.isoformat(), *keys),
             ).fetchone()
         return row is not None
 
@@ -678,6 +748,7 @@ class OKXTradeBarLoader:
             "contract_value": self.contract_value,
             "large_trade_notional_threshold": self.large_trade_notional_threshold,
             "align_with_okx_loader_timezone": self.align_with_okx_loader_timezone,
+            "cache_schema_version": self.CACHE_SCHEMA_VERSION,
             "timezone": TIMEZONE,
         }
         with self._get_db_connection() as conn:
@@ -764,11 +835,53 @@ class OKXTradeBarLoader:
             logger.warning("无法解析 TIMEZONE=%r，trades 聚合 timestamp 不做偏移", tz_text)
             return 0
 
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        text = str(timeframe).strip()
+        if not text:
+            raise ValueError("timeframe cannot be empty")
+
+        unit = text[-1]
+        amount_text = text[:-1]
+        if not amount_text.isdigit():
+            raise ValueError(
+                f"invalid timeframe: {timeframe!r}. Use positive integer + unit, e.g. 1s, 5s, 30s, 1m, 5m, 1H, 1D."
+            )
+        amount = int(amount_text)
+        if amount <= 0:
+            raise ValueError(f"timeframe must be positive, got: {timeframe!r}")
+
+        unit_low = unit.lower()
+        if unit_low == "s":
+            return f"{amount}s"
+        if unit_low == "m":
+            return f"{amount}m"
+        if unit_low == "h":
+            return f"{amount}H"
+        if unit_low == "d":
+            return f"{amount}D"
+        raise ValueError(
+            f"unsupported timeframe unit: {timeframe!r}. Supported units: s(seconds), m(minutes), H(hours), D(days)."
+        )
+
+    def _freq_from_timeframe(self, timeframe: str) -> str:
+        amount = int(timeframe[:-1])
+        unit = timeframe[-1]
+        if unit == "s":
+            return f"{amount}s"
+        if unit == "m":
+            return f"{amount}min"
+        if unit == "H":
+            return f"{amount}h"
+        if unit == "D":
+            return f"{amount}D"
+        raise ValueError(f"unsupported normalized timeframe: {timeframe!r}")
+
     def _get_seconds(self, timeframe: str) -> int:
-        mapping = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1H": 3600, "4H": 14400, "1D": 86400}
-        if timeframe not in mapping:
-            raise IndexError(f"没有这个timeframe: {timeframe}")
-        return mapping[timeframe]
+        normalized = self._normalize_timeframe(timeframe)
+        amount = int(normalized[:-1])
+        unit = normalized[-1]
+        multipliers = {"s": 1, "m": 60, "H": 3600, "D": 86400}
+        return amount * multipliers[unit]
 
     # ------------------------------------------------------------------
     # Formatting/math helpers
@@ -788,7 +901,14 @@ class OKXTradeBarLoader:
                 out[col] = 0.0
             out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
 
-        count_cols = ["trades_count", "buy_trades_count", "sell_trades_count", "large_trades_count"]
+        count_cols = [
+            "trades_count",
+            "buy_trades_count",
+            "sell_trades_count",
+            "large_buy_trades_count",
+            "large_sell_trades_count",
+            "large_trades_count",
+        ]
         for col in count_cols:
             out[col] = out[col].round().astype("int64")
 
@@ -813,15 +933,36 @@ class OKXTradeBarLoader:
         return self._safe_sql_identifier(f"{self.symbol}_trade_bars_{self.timeframe}_cv{contract_tag}_lg{large_tag}_{tz_tag}")
 
     def _cache_key(self) -> str:
-        return "|".join(
-            [
-                self.symbol,
-                self.timeframe,
-                f"contract_value={self.contract_value:g}",
-                f"large={self.large_trade_notional_threshold:g}",
-                f"tz_offset={self.timezone_offset_hours if self.align_with_okx_loader_timezone else 0}",
-            ]
-        )
+        """Stable coverage key for this physical cache table.
+
+        Do not include CACHE_SCHEMA_VERSION here. Schema/features can evolve via
+        ALTER TABLE without invalidating historical day coverage. Use
+        force_rebuild=True when a real feature backfill is needed.
+        """
+        return self._cache_key_for_schema(None)
+
+    def _compatible_cache_keys(self) -> list[str]:
+        keys = [self._cache_key()]
+        # Backward compatibility for previous coverage keys that included the
+        # schema version. This prevents a normal read from rebuilding old days
+        # just because the feature schema changed.
+        for schema_version in range(int(self.CACHE_SCHEMA_VERSION), 0, -1):
+            legacy = self._cache_key_for_schema(schema_version)
+            if legacy not in keys:
+                keys.append(legacy)
+        return keys
+
+    def _cache_key_for_schema(self, schema_version: int | None) -> str:
+        parts = [
+            self.symbol,
+            self.timeframe,
+            f"contract_value={self.contract_value:g}",
+            f"large={self.large_trade_notional_threshold:g}",
+        ]
+        if schema_version is not None:
+            parts.append(f"schema={schema_version}")
+        parts.append(f"tz_offset={self.timezone_offset_hours if self.align_with_okx_loader_timezone else 0}")
+        return "|".join(parts)
 
     def _safe_sql_identifier(self, value: str) -> str:
         text = str(value).replace("-", "_").replace("/", "_").replace("\\", "_").replace(".", "p").replace("+", "plus")
