@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-07T00:00:00Z",
+  "edges": [
+    {
+      "id": "ETH_EDGE_LOW_SWEEP_A0",
+      "name": "Low Sweep A0 Reversal",
+      "family": "low_sweep_reversal",
+      "status": "backtest_passed",
+      "symbol": "ETH-USDT-SWAP",
+      "horizon": "1m_to_60m",
+      "causal_timing": "closed_1m_bar_next_open",
+      "data_required": [
+        "1m_trade_bar",
+        "range_footprint",
+        "large_trade_share"
+      ],
+      "research_report": "data/reports/research/low_sweep_a_upgrade_research",
+      "backtest_report": "data/reports/backtest/mf/low_sweep_V1_a0_footprint",
+      "portfolio_report": "data/reports/backtest/portfolio/ETH_portfolio_V1_lf_v10b_low_sweep_mf",
+      "edge_summary": {
+        "live_exit_variant": "time48",
+        "portfolio_role": "mf_sleeve",
+        "position_fraction_hint": 0.1
+      },
+      "decision": {
+        "research": "passed",
+        "backtest": "passed",
+        "portfolio": "pending_review"
+      },
+      "created_at": "2026-07-07T00:00:00Z",
+      "updated_at": "2026-07-07T00:00:00Z",
+      "notes": "Initial registry seed from existing low-sweep V1 work. Keep live migration guarded by parity and preflight."
+    },
+    {
+      "id": "ETH_EDGE_CVD_SEQUENCE_MOMENTUM",
+      "name": "Range-Bar CVD Sequence Momentum",
+      "family": "cvd_momentum",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "horizon": "range_bar_short_horizon",
+      "causal_timing": "closed_range_bar",
+      "data_required": [
+        "range_bar",
+        "cvd"
+      ],
+      "research_report": "",
+      "backtest_report": "",
+      "portfolio_report": "",
+      "edge_summary": {
+        "reason": "full backtests were negative after costs"
+      },
+      "decision": {
+        "research": "failed",
+        "next_action": "do_not_continue"
+      },
+      "created_at": "2026-07-07T00:00:00Z",
+      "updated_at": "2026-07-07T00:00:00Z",
+      "notes": "Rejected edge kept to avoid repeating the same research direction."
+    }
+  ]
+}

@@ -1,0 +1,471 @@
+{
+  "schema_version": 1,
+  "note": "Known legacy imports. New research/backtest coupling should not be added.",
+  "allowed_legacy_imports": [
+    {
+      "file": "backtest/lf/eth_1d_4h_bear_short_engine_v3_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_1d_4h_bull_range_reclaim_v2_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_1d_4h_momentum_breakout_v1_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_1d_4h_momentum_breakout_v2_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_1d_4h_momentum_breakout_v3_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10_momentum_micro_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10_momentum_micro_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10_momentum_micro_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10_momentum_micro_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10a_momentum_micro_short_speed_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10a_momentum_micro_short_speed_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10a_momentum_micro_short_speed_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10a_momentum_micro_short_speed_filter_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v10b_all_swing_structural_stop_backtest.py",
+      "module": "backtest.lf",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v1_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v1_backtest.py",
+      "module": "backtest.lf.eth_4h_turtle_pyramid_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v2_confirm_only_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v2_confirm_only_backtest.py",
+      "module": "backtest.lf.eth_4h_turtle_pyramid_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v3_bear_confirm_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v3_bear_confirm_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v3_bear_confirm_backtest.py",
+      "module": "backtest.lf.eth_4h_turtle_pyramid_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v4b_short_quality_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v4b_short_quality_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v4b_short_quality_backtest.py",
+      "module": "backtest.lf.eth_4h_turtle_pyramid_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v5_momentum_bear_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v5_momentum_bear_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v5_momentum_bear_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v6_momentum_bear_bull_reclaim_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v6_momentum_bear_bull_reclaim_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v6_momentum_bear_bull_reclaim_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v6_momentum_bear_bull_reclaim_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v7b_micro_confirmation_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v7b_micro_confirmation_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v7b_micro_confirmation_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v7b_micro_confirmation_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v8_micro_confirm_scaled_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v8_micro_confirm_scaled_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v8_micro_confirm_scaled_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v8_micro_confirm_scaled_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9c_reclaim_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9c_reclaim_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9c_reclaim_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9c_reclaim_priority_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9e_range_exit_overlay_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bear_short_engine_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9e_range_exit_overlay_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_bull_range_reclaim_v2_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9e_range_exit_overlay_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_momentum_breakout_v3_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/lf/eth_lf_portfolio_v9e_range_exit_overlay_backtest.py",
+      "module": "backtest.lf.eth_1d_4h_trend_rider_v8_position_lock_backtest",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/mf/low_sweep/low_sweep_V1_a0_footprint_backtest.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "backtest_imports_research"
+    },
+    {
+      "file": "backtest/mf/low_sweep/low_sweep_V1_a0_footprint_backtest.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "backtest_imports_research"
+    },
+    {
+      "file": "backtest/portfolio/eth_portfolio_V1_lf_v10b_low_sweep_mf_backtest.py",
+      "module": "backtest.lf",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/portfolio/eth_portfolio_V1_lf_v10b_low_sweep_mf_backtest.py",
+      "module": "backtest.lf",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/portfolio/eth_portfolio_V1_lf_v10b_low_sweep_mf_backtest.py",
+      "module": "backtest.mf.low_sweep",
+      "reason": "backtest_imports_backtest"
+    },
+    {
+      "file": "backtest/portfolio/eth_portfolio_V1_lf_v10b_low_sweep_mf_backtest.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "backtest_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_early_exit_research.py",
+      "module": "backtest.mf.low_sweep.low_sweep_V1_a0_footprint_backtest",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_early_exit_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_early_exit_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery.py",
+      "module": "backtest.mf.low_sweep.low_sweep_V1_a0_footprint_backtest",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery_v2.py",
+      "module": "backtest.mf.low_sweep.low_sweep_V1_a0_footprint_backtest",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery_v2.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_cvd_micro_feature_discovery_v2.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_overlap_add_deep_research.py",
+      "module": "backtest.mf.low_sweep",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_overlap_add_deep_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_overlap_add_research.py",
+      "module": "backtest.mf.low_sweep",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_A0_overlap_add_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_V1_a0_footprint_validation.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep/low_sweep_V2_micro_a1_exit_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_a_upgrade_research.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_a_upgrade_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_a_upgrade_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_a_upgrade_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_a_upgrade_research.py",
+      "module": "research.low_sweep_scale_in_path_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_multi_swing_support_research.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_multi_swing_support_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_multi_swing_support_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_multi_swing_support_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_multi_swing_support_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_panic_reversal_strategy_backtest_probe.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_panic_reversal_strategy_backtest_probe.py",
+      "module": "research.low_sweep_panic_reversal_strategy_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_panic_reversal_strategy_backtest_probe.py",
+      "module": "research.low_sweep_scale_in_path_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_panic_reversal_strategy_probe.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_scale_in_path_probe.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_scale_in_path_probe.py",
+      "module": "research.low_sweep_panic_reversal_strategy_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_unconsumed_support_research.py",
+      "module": "research.focused_low_sweep_reversal_event_lab",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_unconsumed_support_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_unconsumed_support_research.py",
+      "module": "research.low_sweep_a_upgrade_research",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_unconsumed_support_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_backtest_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/low_sweep_unconsumed_support_research.py",
+      "module": "research.low_sweep_panic_reversal_strategy_probe",
+      "reason": "research_imports_research"
+    },
+    {
+      "file": "research/v10b_structural_neighbourhood.py",
+      "module": "backtest.lf",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/v10b_structural_neighbourhood.py",
+      "module": "backtest.lf",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/v10b_winrate_full_research.py",
+      "module": "backtest.lf",
+      "reason": "research_imports_backtest"
+    },
+    {
+      "file": "research/v10b_winrate_full_research.py",
+      "module": "backtest.lf",
+      "reason": "research_imports_backtest"
+    }
+  ]
+}
