@@ -1,0 +1,2 @@
+"""Reusable edge strategy logic."""
+
