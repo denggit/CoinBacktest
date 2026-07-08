@@ -8,11 +8,20 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.research_common.review_pack import finalize_research_report
+
 if TYPE_CHECKING:
     from .models import EventStudyResult
 
 
-def write_event_study_report(result: "EventStudyResult", out_dir: str | Path) -> None:
+def write_event_study_report(
+    result: "EventStudyResult",
+    out_dir: str | Path,
+    *,
+    experiment_id: str | None = None,
+    edge_id: str | None = None,
+    write_review_pack: bool = True,
+) -> None:
     """Write standard CSV/JSON outputs for one event-study run."""
     path = Path(out_dir)
     path.mkdir(parents=True, exist_ok=True)
@@ -24,3 +33,10 @@ def write_event_study_report(result: "EventStudyResult", out_dir: str | Path) ->
     result.causal_audit.to_csv(path / "08_causal_audit.csv", index=False)
     with (path / "10_meta.json").open("w", encoding="utf-8") as f:
         json.dump(result.meta, f, ensure_ascii=False, indent=2, default=str)
+    if write_review_pack:
+        finalize_research_report(
+            path,
+            experiment_id=experiment_id,
+            edge_id=edge_id,
+            title=str(result.meta.get("title") or result.meta.get("name") or path.name),
+        )
