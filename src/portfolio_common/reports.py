@@ -158,7 +158,7 @@ def filter_yearly_monthly(df: pd.DataFrame, primary_scenario: str | None = None)
 def build_manifest(
     args: Any,
     *,
-    source_of_truth: str,
+    migration_reference: dict[str, object] | None = None,
     artifacts: list[str],
     parity_old_report_dir: str | None = None,
 ) -> dict[str, object]:
@@ -166,7 +166,7 @@ def build_manifest(
         "portfolio_id": PORTFOLIO_ID,
         "script": "backtest/portfolio/eth_portfolio_V1_backtest.py",
         "class": "portfolio_backtest_refactor",
-        "source_of_truth": source_of_truth,
+        "migration_reference": migration_reference,
         "symbol": args.symbol,
         "start_date": args.start_date,
         "end_date": args.end_date,

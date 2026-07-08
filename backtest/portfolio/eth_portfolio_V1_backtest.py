@@ -58,7 +58,6 @@ from src.sleeve_lib.lf_v10b.selector import run_lf_v10b_leg  # noqa: E402
 from src.utils.report import print_full_report  # noqa: E402
 
 SCRIPT_NAME = "eth_portfolio_V1_backtest"
-SOURCE_OF_TRUTH = PROJECT_ROOT / "backtest/portfolio/eth_portfolio_V1_lf_v10b_low_sweep_mf_backtest.py"
 DEFAULT_OUT_DIR = "data/reports/backtest/portfolio/eth_portfolio_V1"
 PRIMARY_SCENARIO = "portfolio_v1_lf100_mf150_time48_independent"
 REPORT_STRATEGY_NAME = "ETH_Portfolio_V1_LF_V10B_LowSweepMF"
@@ -322,19 +321,13 @@ def _patch_full_report_footer(txt_path: Path, *, trades_path: str, txt_path_name
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if not SOURCE_OF_TRUTH.exists():
-        print(f"[error] legacy source of truth not found: {SOURCE_OF_TRUTH}", flush=True)
-        return 2
-
     args = parse_args(argv)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[run] {SCRIPT_NAME}", flush=True)
-    print(f"[source_of_truth] {SOURCE_OF_TRUTH}", flush=True)
     print(f"[args] symbol={args.symbol} start={args.start_date} end={args.end_date} warmup={args.warmup_start_date}", flush=True)
     print(f"[args] out_dir={out_dir}", flush=True)
-    print("[scope] refactored src modules only; legacy file is read-only source of truth/parity source", flush=True)
 
     # --- Run child strategies ---
     lf_trades, _lf_equity, _lf_features = run_lf_v10b_leg(args)
@@ -394,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --- Manifest ---
     manifest = build_manifest(
         args,
-        source_of_truth=str(SOURCE_OF_TRUTH.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+        migration_reference=None,
         artifacts=[],
         parity_old_report_dir=args.parity_old_report_dir,
     )
