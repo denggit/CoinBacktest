@@ -2,33 +2,5 @@
   "schema_version": 1,
   "updated_at": "2026-07-07T00:00:00Z",
   "experiments": [
-    {
-      "id": "ETH_MF_LOW_SWEEP_V1",
-      "title": "ETH MF Low Sweep V1 A0 Footprint",
-      "stage": "portfolio",
-      "status": "portfolio_pending",
-      "symbol": "ETH-USDT-SWAP",
-      "family": "low_sweep_reversal",
-      "hypothesis": "Low sweep with footprint pressure and large-share context has short-horizon reversal edge.",
-      "owner": "research",
-      "created_at": "2026-07-07T00:00:00Z",
-      "updated_at": "2026-07-07T00:00:00Z",
-      "data_required": [
-        "1m_trade_bar",
-        "range_footprint",
-        "large_trade_share"
-      ],
-      "reports": {
-        "research": "data/reports/research/low_sweep_a_upgrade_research",
-        "backtest": "data/reports/backtest/mf/low_sweep_V1_a0_footprint",
-        "portfolio": "data/reports/backtest/portfolio/ETH_portfolio_V1_lf_v10b_low_sweep_mf"
-      },
-      "decision": {
-        "research": "passed",
-        "backtest": "passed",
-        "portfolio": "pending_review"
-      },
-      "notes": "Seed record for the current Portfolio V1 MF sleeve work."
-    }
   ]
 }

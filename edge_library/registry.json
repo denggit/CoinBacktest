@@ -1,62 +1,101 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-07T00:00:00Z",
+  "updated_at": "2026-07-08T08:55:10Z",
   "edges": [
     {
-      "id": "ETH_EDGE_LOW_SWEEP_A0",
-      "name": "Low Sweep A0 Reversal",
-      "family": "low_sweep_reversal",
+      "id": "ETH_EDGE_LF_BEAR_SHORT_V3",
+      "name": "LF Bear Short V3",
+      "family": "lf_bear_short",
       "status": "backtest_passed",
       "symbol": "ETH-USDT-SWAP",
-      "horizon": "1m_to_60m",
+      "horizon": "4H_to_multi_day",
+      "causal_timing": "closed_4H_bar_next_open",
+      "data_required": [
+        "4H_ohlcv",
+        "1D_ohlcv",
+        "1W_ohlcv",
+        "bear_regime_context",
+        "range_footprint_context"
+      ],
+      "research_report": "",
+      "backtest_report": "data/reports/backtest/lf/eth_lf_portfolio_v10b_all_swing_structural_stop",
+      "portfolio_report": "data/reports/backtest/portfolio/eth_portfolio_V1",
+      "edge_summary": {},
+      "decision": {},
+      "created_at": "2026-07-08T08:54:57Z",
+      "updated_at": "2026-07-08T08:54:57Z",
+      "notes": "Source module: src.edge_lib.lf_bear_short. Runtime engine name inside LF sleeve: BEAR_V3_ONLY."
+    },
+    {
+      "id": "ETH_EDGE_LF_BULL_RANGE_RECLAIM_V2",
+      "name": "LF Bull Range Reclaim V2",
+      "family": "lf_bull_range_reclaim",
+      "status": "backtest_passed",
+      "symbol": "ETH-USDT-SWAP",
+      "horizon": "4H_to_multi_day",
+      "causal_timing": "closed_4H_bar_next_open",
+      "data_required": [
+        "4H_ohlcv",
+        "1D_ohlcv",
+        "1W_ohlcv",
+        "bull_regime_context",
+        "range_footprint_context"
+      ],
+      "research_report": "",
+      "backtest_report": "data/reports/backtest/lf/eth_lf_portfolio_v10b_all_swing_structural_stop",
+      "portfolio_report": "data/reports/backtest/portfolio/eth_portfolio_V1",
+      "edge_summary": {},
+      "decision": {},
+      "created_at": "2026-07-08T08:55:01Z",
+      "updated_at": "2026-07-08T08:55:01Z",
+      "notes": "Source module: src.edge_lib.lf_bull_range_reclaim. Runtime engine name inside LF sleeve: BULL_RECLAIM_V2."
+    },
+    {
+      "id": "ETH_EDGE_LF_MOMENTUM_BREAKOUT_V3",
+      "name": "LF Momentum Breakout V3",
+      "family": "lf_momentum_breakout",
+      "status": "backtest_passed",
+      "symbol": "ETH-USDT-SWAP",
+      "horizon": "4H_to_multi_day",
+      "causal_timing": "closed_4H_bar_next_open",
+      "data_required": [
+        "4H_ohlcv",
+        "1D_ohlcv",
+        "1W_ohlcv",
+        "range_footprint_context",
+        "range_speed_context"
+      ],
+      "research_report": "",
+      "backtest_report": "data/reports/backtest/lf/eth_lf_portfolio_v10b_all_swing_structural_stop",
+      "portfolio_report": "data/reports/backtest/portfolio/eth_portfolio_V1",
+      "edge_summary": {},
+      "decision": {},
+      "created_at": "2026-07-08T08:54:11Z",
+      "updated_at": "2026-07-08T08:54:11Z",
+      "notes": "Source module: src.edge_lib.lf_momentum_breakout. Runtime engine name inside LF sleeve: MOMENTUM_V3."
+    },
+    {
+      "id": "ETH_EDGE_MF_LOW_SWEEP_A0_FOOTPRINT",
+      "name": "MF Low Sweep A0 Footprint Time48",
+      "family": "mf_low_sweep_reversal",
+      "status": "backtest_passed",
+      "symbol": "ETH-USDT-SWAP",
+      "horizon": "1m_to_48m",
       "causal_timing": "closed_1m_bar_next_open",
       "data_required": [
         "1m_trade_bar",
         "range_footprint",
-        "large_trade_share"
+        "large_trade_share",
+        "cvd_notional"
       ],
       "research_report": "data/reports/research/low_sweep_a_upgrade_research",
       "backtest_report": "data/reports/backtest/mf/low_sweep_V1_a0_footprint",
-      "portfolio_report": "data/reports/backtest/portfolio/ETH_portfolio_V1_lf_v10b_low_sweep_mf",
-      "edge_summary": {
-        "live_exit_variant": "time48",
-        "portfolio_role": "mf_sleeve",
-        "position_fraction_hint": 0.1
-      },
-      "decision": {
-        "research": "passed",
-        "backtest": "passed",
-        "portfolio": "pending_review"
-      },
-      "created_at": "2026-07-07T00:00:00Z",
-      "updated_at": "2026-07-07T00:00:00Z",
-      "notes": "Initial registry seed from existing low-sweep V1 work. Keep live migration guarded by parity and preflight."
-    },
-    {
-      "id": "ETH_EDGE_CVD_SEQUENCE_MOMENTUM",
-      "name": "Range-Bar CVD Sequence Momentum",
-      "family": "cvd_momentum",
-      "status": "rejected",
-      "symbol": "ETH-USDT-SWAP",
-      "horizon": "range_bar_short_horizon",
-      "causal_timing": "closed_range_bar",
-      "data_required": [
-        "range_bar",
-        "cvd"
-      ],
-      "research_report": "",
-      "backtest_report": "",
-      "portfolio_report": "",
-      "edge_summary": {
-        "reason": "full backtests were negative after costs"
-      },
-      "decision": {
-        "research": "failed",
-        "next_action": "do_not_continue"
-      },
-      "created_at": "2026-07-07T00:00:00Z",
-      "updated_at": "2026-07-07T00:00:00Z",
-      "notes": "Rejected edge kept to avoid repeating the same research direction."
+      "portfolio_report": "data/reports/backtest/portfolio/eth_portfolio_V1",
+      "edge_summary": {},
+      "decision": {},
+      "created_at": "2026-07-08T08:55:10Z",
+      "updated_at": "2026-07-08T08:55:10Z",
+      "notes": "Source module: src.edge_lib.mf_low_sweep. Variant name: MF_LOW_SWEEP_TIME48. Sleeve id: ETH_SLEEVE_MF_LOW_SWEEP_V1."
     }
   ]
 }
