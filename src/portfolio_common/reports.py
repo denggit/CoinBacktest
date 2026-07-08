@@ -76,11 +76,83 @@ def build_standard_summary(summary: pd.DataFrame, combined_all: pd.DataFrame) ->
     return out.loc[:, cols].replace([np.inf, -np.inf], np.nan)
 
 
+def build_primary_summary(
+    summary: pd.DataFrame,
+    combined_all: pd.DataFrame,
+    primary_scenario: str,
+) -> pd.DataFrame:
+    """Return a single-row summary for the primary scenario only.
+
+    Used for 01_summary.csv.
+    """
+    full = build_standard_summary(summary, combined_all)
+    if full.empty:
+        return full
+    mask = full["scenario"].astype(str).eq(str(primary_scenario))
+    if not mask.any():
+        return pd.DataFrame(columns=full.columns)
+    out = full.loc[mask].head(1).reset_index(drop=True)
+    # Ensure required columns are present.
+    primary_cols = [
+        "portfolio_id",
+        "trades",
+        "total_return",
+        "final_capital",
+        "max_drawdown",
+        "win_rate",
+        "profit_factor",
+        "avg_trade_return",
+        "total_fee",
+    ]
+    for col in primary_cols:
+        if col not in out.columns:
+            out[col] = np.nan
+    # Add time bounds from combined trades if available.
+    if not combined_all.empty and "scenario" in combined_all.columns:
+        primary_trades = combined_all.loc[combined_all["scenario"].astype(str).eq(str(primary_scenario))].copy()
+        if not primary_trades.empty:
+            out["first_entry_time"] = primary_trades["entry_time"].min() if "entry_time" in primary_trades.columns else np.nan
+            out["last_exit_time"] = primary_trades["exit_time"].max() if "exit_time" in primary_trades.columns else np.nan
+    if "first_entry_time" not in out.columns:
+        out["first_entry_time"] = np.nan
+    if "last_exit_time" not in out.columns:
+        out["last_exit_time"] = np.nan
+    # Add primary_scenario label column.
+    out["primary_scenario"] = primary_scenario
+    # Reorder: portfolio_id, primary_scenario first, then metrics, then time bounds.
+    ordered = [
+        "portfolio_id",
+        "primary_scenario",
+        "trades",
+        "total_return",
+        "final_capital",
+        "max_drawdown",
+        "win_rate",
+        "profit_factor",
+        "avg_trade_return",
+        "total_fee",
+        "first_entry_time",
+        "last_exit_time",
+    ]
+    # Only keep the required columns.
+    cols = [c for c in ordered if c in out.columns]
+    return out.loc[:, cols]
+
+
 def select_primary_trades(combined_all: pd.DataFrame, primary_scenario: str) -> pd.DataFrame:
     if combined_all.empty:
         return combined_all.copy()
     out = combined_all.loc[combined_all["scenario"].astype(str).eq(str(primary_scenario))].copy()
     return out.sort_values(["exit_time", "strategy_leg", "entry_time"]).reset_index(drop=True)
+
+
+def filter_yearly_monthly(df: pd.DataFrame, primary_scenario: str | None = None) -> pd.DataFrame:
+    """Optionally filter yearly/monthly rows to a single scenario."""
+    if df.empty:
+        return df
+    if primary_scenario is not None and "scenario" in df.columns:
+        return df.loc[df["scenario"].astype(str).eq(str(primary_scenario))].copy()
+    return df.copy()
 
 
 def build_manifest(

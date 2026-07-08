@@ -37,6 +37,11 @@ def write_standard_artifacts(
     daily_returns: pd.DataFrame,
     stress: pd.DataFrame | None,
 ) -> list[str]:
+    """Write core standardized artifacts.
+
+    ``summary`` must already be filtered to the primary scenario row
+    (use ``build_primary_summary`` before calling).
+    """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     artifacts = [
@@ -73,6 +78,57 @@ def write_standard_artifacts(
     return artifacts
 
 
+def write_diagnostic_artifacts(
+    out_dir: str | Path,
+    *,
+    scenario_summary: pd.DataFrame,
+    yearly: pd.DataFrame,
+    monthly: pd.DataFrame,
+    overlap: pd.DataFrame,
+    sizing: pd.DataFrame,
+    margin_stress: pd.DataFrame,
+    mf_by_lf_state: pd.DataFrame,
+    guard_summary: pd.DataFrame,
+) -> list[str]:
+    """Write diagnostic artifacts 07–14."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    artifacts: list[str] = []
+    write_csv(scenario_summary, out / "07_scenario_summary.csv", "scenario_summary")
+    artifacts.append("07_scenario_summary.csv")
+    write_csv(yearly, out / "08_yearly.csv", "yearly")
+    artifacts.append("08_yearly.csv")
+    write_csv(monthly, out / "09_monthly.csv", "monthly")
+    artifacts.append("09_monthly.csv")
+    write_csv(overlap, out / "10_lf_mf_overlap.csv", "overlap")
+    artifacts.append("10_lf_mf_overlap.csv")
+    if sizing is not None and not sizing.empty:
+        write_csv(sizing, out / "11_sleeve_sizing.csv", "sleeve_sizing")
+        artifacts.append("11_sleeve_sizing.csv")
+    if margin_stress is not None and not margin_stress.empty:
+        write_csv(margin_stress, out / "12_margin_overlap_stress.csv", "margin_overlap_stress")
+        artifacts.append("12_margin_overlap_stress.csv")
+    if mf_by_lf_state is not None and not mf_by_lf_state.empty:
+        write_csv(mf_by_lf_state, out / "13_mf_by_lf_state.csv", "mf_by_lf_state")
+        artifacts.append("13_mf_by_lf_state.csv")
+    if guard_summary is not None and not guard_summary.empty:
+        write_csv(guard_summary, out / "14_guard_summary.csv", "guard_summary")
+        artifacts.append("14_guard_summary.csv")
+    return artifacts
+
+
+def write_all_scenario_trades(
+    out_dir: str | Path,
+    combined_all: pd.DataFrame,
+) -> str | None:
+    """Write 80_all_scenario_trades.csv (only when --write-all-scenario-trades)."""
+    if combined_all.empty:
+        return None
+    out = Path(out_dir)
+    write_csv(combined_all, out / "80_all_scenario_trades.csv", "all_scenario_trades")
+    return "80_all_scenario_trades.csv"
+
+
 def finalize_review_pack(out_dir: str | Path) -> None:
     write_gpt_review_pack(
         ReviewPackConfig(
@@ -85,4 +141,3 @@ def finalize_review_pack(out_dir: str | Path) -> None:
             print_log=True,
         )
     )
-

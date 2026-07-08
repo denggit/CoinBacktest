@@ -614,6 +614,7 @@ def standardize_trades(combined: pd.DataFrame) -> pd.DataFrame:
                 "edge_id",
                 "sleeve_id",
                 "exit_reason",
+                "display_exit_reason",
             ]
         )
     for i, (_, row) in enumerate(combined.sort_values(["exit_time", "strategy_leg", "entry_time"]).iterrows(), start=1):
@@ -622,6 +623,11 @@ def standardize_trades(combined: pd.DataFrame) -> pd.DataFrame:
         edge_id = MF_EDGE_ID if leg == MF_TIME48_LEG else EDGE_ID_BY_ENGINE.get(engine, "UNKNOWN")
         sleeve_id = MF_SLEEVE_ID if leg == MF_TIME48_LEG else LF_SLEEVE_ID
         side_i = 1 if leg == MF_TIME48_LEG else side_from_trade_row(row)
+        exit_reason_raw = str(row.get("exit_reason", row.get("note", "")))
+        if leg == MF_TIME48_LEG:
+            display_exit_reason = f"MF_LOW_SWEEP_TIME48:{exit_reason_raw}"
+        else:
+            display_exit_reason = f"LF_V10B:{exit_reason_raw}"
         rows.append(
             {
                 "trade_id": f"T{i:06d}",
@@ -636,7 +642,8 @@ def standardize_trades(combined: pd.DataFrame) -> pd.DataFrame:
                 "return": safe_float(row.get("portfolio_return", row.get("return_on_sleeve", np.nan))),
                 "edge_id": edge_id,
                 "sleeve_id": sleeve_id,
-                "exit_reason": str(row.get("exit_reason", row.get("note", ""))),
+                "exit_reason": exit_reason_raw,
+                "display_exit_reason": display_exit_reason,
                 "strategy_leg": leg,
                 "engine": engine,
                 "scenario": row.get("scenario", ""),
@@ -726,6 +733,328 @@ def stress_report(lf: pd.DataFrame, mf: pd.DataFrame, args: Any) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic report helpers (ported from legacy, time48-only)
+# ---------------------------------------------------------------------------
+
+
+def _series_stat(series: pd.Series, fn: str) -> float:
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return float("nan")
+    if fn == "median":
+        return float(s.median())
+    if fn == "p75":
+        return float(s.quantile(0.75))
+    if fn == "p95":
+        return float(s.quantile(0.95))
+    if fn == "max":
+        return float(s.max())
+    if fn == "mean":
+        return float(s.mean())
+    raise ValueError(fn)
+
+
+def summarize_period(combined: pd.DataFrame, period: str) -> pd.DataFrame:
+    """Yearly or monthly breakdown by scenario (time48 only)."""
+    if combined.empty:
+        return pd.DataFrame()
+    df = combined.copy()
+    df["exit_time"] = pd.to_datetime(df["exit_time"], errors="coerce")
+    if period == "year":
+        df["period"] = df["exit_time"].dt.year.astype(str)
+    elif period == "month":
+        df["period"] = df["exit_time"].dt.to_period("M").astype(str)
+    else:
+        raise ValueError(period)
+    rows: list[dict[str, object]] = []
+    for (scenario, per), grp in df.groupby(["scenario", "period"], dropna=False):
+        r = pd.to_numeric(grp["portfolio_return"], errors="coerce").dropna()
+        rows.append(
+            {
+                "scenario": scenario,
+                "period": per,
+                "trades": int(len(grp)),
+                "lf_trades": int(grp["strategy_leg"].eq(LF_LEG).sum()),
+                "mf_trades": int(grp["strategy_leg"].eq(MF_TIME48_LEG).sum()),
+                "period_return_compounded": float(np.prod(1.0 + r.to_numpy(dtype=float)) - 1.0) if len(r) else 0.0,
+                "win_rate": float((r > 0).mean()) if len(r) else float("nan"),
+                "profit_factor": profit_factor(r),
+                "worst_trade_return": float(r.min()) if len(r) else float("nan"),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["scenario", "period"]).reset_index(drop=True)
+
+
+def build_overlap_report(lf: pd.DataFrame, mf: pd.DataFrame) -> pd.DataFrame:
+    """LF/MF overlap diagnostics (time48 only)."""
+    rows: list[dict[str, object]] = []
+    mfv = mf.loc[mf["variant_name"].eq(MF_TIME48_LEG)].copy() if not mf.empty and "variant_name" in mf.columns else pd.DataFrame()
+    if mfv.empty:
+        return pd.DataFrame(rows)
+    active = 0
+    active_short = 0
+    active_long = 0
+    for _, row in mfv.iterrows():
+        side = lf_active_side_at(pd.Timestamp(row["entry_time"]), lf)
+        if side != 0:
+            active += 1
+        if side < 0:
+            active_short += 1
+        if side > 0:
+            active_long += 1
+    rows.append(
+        {
+            "mf_variant_name": MF_TIME48_LEG,
+            "mf_trades": int(len(mfv)),
+            "lf_active_at_mf_entry": int(active),
+            "lf_long_at_mf_entry": int(active_long),
+            "lf_short_at_mf_entry": int(active_short),
+            "lf_active_ratio": float(active / len(mfv)) if len(mfv) else float("nan"),
+            "lf_short_ratio": float(active_short / len(mfv)) if len(mfv) else float("nan"),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def build_margin_overlap_stress(lf: pd.DataFrame, mf: pd.DataFrame, args: Any) -> pd.DataFrame:
+    """Summarize independent-sleeve margin/exposure at MF entry times (time48 only)."""
+    leverage = float(getattr(args, "leverage", DEFAULT_LEVERAGE) or DEFAULT_LEVERAGE)
+    exposures = parse_float_list(args.mf_exposures)
+    rows: list[dict[str, object]] = []
+    if mf.empty:
+        return pd.DataFrame(rows)
+    mfv = mf.loc[mf["variant_name"].eq(MF_TIME48_LEG)].copy()
+    if mfv.empty:
+        return pd.DataFrame(rows)
+    active_records: list[dict[str, object]] = []
+    for _, row in mfv.sort_values("entry_time").iterrows():
+        ts = pd.Timestamp(row["entry_time"])
+        active = active_lf_trade_at(ts, lf)
+        lf_side = 0
+        lf_notional = 0.0
+        lf_engine = "NONE"
+        if active is not None:
+            lf_side = side_from_trade_row(active)
+            lf_notional = safe_float(active.get("position_notional_mult", 0.0), 0.0)
+            lf_engine = str(active.get("engine", "UNKNOWN"))
+        active_records.append({"lf_side": lf_side, "lf_notional": lf_notional, "lf_engine": lf_engine})
+    active_df = pd.DataFrame(active_records)
+    lf_notional_series = pd.to_numeric(active_df.get("lf_notional", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+    lf_active = lf_notional_series > 0
+    for exp in exposures:
+        total_notional = lf_notional_series + float(exp)
+        total_margin = total_notional / leverage
+        rows.append(
+            {
+                "mf_variant_name": MF_TIME48_LEG,
+                "mf_exposure": float(exp),
+                "mf_margin_fraction_at_leverage": float(exp) / leverage,
+                "mf_trades": int(len(mfv)),
+                "lf_active_at_mf_entry": int(lf_active.sum()),
+                "lf_long_at_mf_entry": int((active_df.get("lf_side", pd.Series(dtype=int)) > 0).sum()),
+                "lf_short_at_mf_entry": int((active_df.get("lf_side", pd.Series(dtype=int)) < 0).sum()),
+                "lf_active_ratio": float(lf_active.mean()) if len(lf_active) else float("nan"),
+                "lf_notional_at_mf_entry_median": _series_stat(lf_notional_series, "median"),
+                "lf_notional_at_mf_entry_p75": _series_stat(lf_notional_series, "p75"),
+                "lf_notional_at_mf_entry_p95": _series_stat(lf_notional_series, "p95"),
+                "lf_notional_at_mf_entry_max": _series_stat(lf_notional_series, "max"),
+                "combined_notional_at_mf_entry_median": _series_stat(total_notional, "median"),
+                "combined_notional_at_mf_entry_p75": _series_stat(total_notional, "p75"),
+                "combined_notional_at_mf_entry_p95": _series_stat(total_notional, "p95"),
+                "combined_notional_at_mf_entry_max": _series_stat(total_notional, "max"),
+                "combined_margin_fraction_p95": _series_stat(total_margin, "p95"),
+                "combined_margin_fraction_max": _series_stat(total_margin, "max"),
+                "combined_margin_over_80pct_count": int((total_margin > 0.80).sum()),
+                "combined_margin_over_90pct_count": int((total_margin > 0.90).sum()),
+                "combined_margin_over_100pct_count": int((total_margin > 1.00).sum()),
+                "sizing_note": "MF fixed exposure is an independent sleeve; live sizing should use account equity at MF entry with a total-exposure/margin guard, not reduce LF positions.",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _classify_lf_state(side: int) -> str:
+    if side > 0:
+        return "LF_LONG"
+    if side < 0:
+        return "LF_SHORT"
+    return "LF_NONE"
+
+
+def build_mf_by_lf_state_report(lf: pd.DataFrame, mf: pd.DataFrame, args: Any) -> pd.DataFrame:
+    """Break down MF Low Sweep results by LF state at MF entry (time48 only)."""
+    leverage = float(getattr(args, "leverage", DEFAULT_LEVERAGE) or DEFAULT_LEVERAGE)
+    exposures = parse_float_list(args.mf_exposures)
+    rows: list[dict[str, object]] = []
+    if mf.empty:
+        return pd.DataFrame(rows)
+    mfv = mf.loc[mf["variant_name"].eq(MF_TIME48_LEG)].copy()
+    if mfv.empty:
+        return pd.DataFrame(rows)
+    records: list[dict[str, object]] = []
+    for _, row in mfv.sort_values("entry_time").iterrows():
+        ts = pd.Timestamp(row["entry_time"])
+        active = active_lf_trade_at(ts, lf)
+        lf_side = 0
+        lf_notional = 0.0
+        lf_engine = "NONE"
+        if active is not None:
+            lf_side = side_from_trade_row(active)
+            lf_notional = safe_float(active.get("position_notional_mult", 0.0), 0.0)
+            lf_engine = str(active.get("engine", "UNKNOWN"))
+        ret = safe_float(row.get("return_on_sleeve", np.nan), float("nan"))
+        records.append(
+            {
+                "entry_time": ts,
+                "exit_time": pd.Timestamp(row["exit_time"]),
+                "lf_state_at_mf_entry": _classify_lf_state(lf_side),
+                "lf_side_at_mf_entry": int(lf_side),
+                "lf_engine_at_mf_entry": lf_engine,
+                "lf_notional_at_mf_entry": float(lf_notional),
+                "mf_return_1x": ret,
+            }
+        )
+    detail = pd.DataFrame(records)
+    if detail.empty:
+        return pd.DataFrame(rows)
+    all_states = ["LF_NONE", "LF_LONG", "LF_SHORT"]
+    for state in all_states:
+        grp = detail.loc[detail["lf_state_at_mf_entry"].eq(state)].copy()
+        if grp.empty:
+            continue
+        raw_ret = pd.to_numeric(grp["mf_return_1x"], errors="coerce").dropna()
+        lf_notional = pd.to_numeric(grp["lf_notional_at_mf_entry"], errors="coerce").fillna(0.0)
+        common: dict[str, object] = {
+            "mf_variant_name": MF_TIME48_LEG,
+            "lf_state_at_mf_entry": state,
+            "mf_trades": int(len(grp)),
+            "first_mf_entry_time": grp["entry_time"].min(),
+            "last_mf_exit_time": grp["exit_time"].max(),
+            "mf_return_1x_compounded": float(np.prod(1.0 + raw_ret.to_numpy(dtype=float)) - 1.0) if len(raw_ret) else 0.0,
+            "mf_win_rate": float((raw_ret > 0).mean()) if len(raw_ret) else float("nan"),
+            "mf_profit_factor_1x": profit_factor(raw_ret),
+            "mf_avg_return_1x": float(raw_ret.mean()) if len(raw_ret) else float("nan"),
+            "mf_median_return_1x": float(raw_ret.median()) if len(raw_ret) else float("nan"),
+            "mf_worst_return_1x": float(raw_ret.min()) if len(raw_ret) else float("nan"),
+            "mf_best_return_1x": float(raw_ret.max()) if len(raw_ret) else float("nan"),
+            "lf_notional_at_mf_entry_median": _series_stat(lf_notional, "median"),
+            "lf_notional_at_mf_entry_p75": _series_stat(lf_notional, "p75"),
+            "lf_notional_at_mf_entry_max": _series_stat(lf_notional, "max"),
+            "sizing_base_note": "MF live sizing should use current account equity at MF entry; this report only groups historical MF returns by LF state.",
+        }
+        engine_counts = grp["lf_engine_at_mf_entry"].value_counts(dropna=False).to_dict()
+        common["lf_engine_counts"] = str(engine_counts)
+        for exp in exposures:
+            scaled = raw_ret * float(exp)
+            total_notional = lf_notional + float(exp)
+            total_margin = total_notional / leverage
+            row_out = dict(common)
+            row_out.update(
+                {
+                    "mf_exposure": float(exp),
+                    "mf_margin_fraction_at_leverage": float(exp) / leverage,
+                    "mf_return_at_exposure_compounded": float(np.prod(1.0 + scaled.to_numpy(dtype=float)) - 1.0) if len(scaled) else 0.0,
+                    "mf_profit_factor_at_exposure": profit_factor(scaled),
+                    "mf_worst_return_at_exposure": float(scaled.min()) if len(scaled) else float("nan"),
+                    "combined_notional_at_mf_entry_median": _series_stat(total_notional, "median"),
+                    "combined_notional_at_mf_entry_p75": _series_stat(total_notional, "p75"),
+                    "combined_notional_at_mf_entry_max": _series_stat(total_notional, "max"),
+                    "combined_margin_fraction_max": _series_stat(total_margin, "max"),
+                }
+            )
+            rows.append(row_out)
+    if not rows:
+        return pd.DataFrame(rows)
+    order = {"LF_NONE": 0, "LF_LONG": 1, "LF_SHORT": 2}
+    out = pd.DataFrame(rows)
+    out["_state_order"] = out["lf_state_at_mf_entry"].map(order).fillna(99)
+    out = out.sort_values(["mf_variant_name", "mf_exposure", "_state_order"]).drop(columns=["_state_order"]).reset_index(drop=True)
+    return out
+
+
+def build_guard_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    """Compact guard comparison table derived from scenario summary (time48 only)."""
+    if summary.empty:
+        return pd.DataFrame()
+    preferred = [
+        "scenario",
+        "mf_variant_name",
+        "mf_exposure",
+        "conflict_mode",
+        "guard_mode",
+        "margin_cap",
+        "notional_cap",
+        "min_mf_exposure",
+        "total_trades",
+        "lf_trades",
+        "mf_trades",
+        "mf_skipped_by_conflict",
+        "mf_guard_scaled_count",
+        "mf_guard_skipped_count",
+        "mf_exposure_actual_avg",
+        "mf_exposure_actual_min",
+        "mf_exposure_actual_max",
+        "max_combined_notional_after_mf",
+        "max_combined_margin_after_mf",
+        "return_total",
+        "final_capital",
+        "win_rate",
+        "profit_factor",
+        "max_drawdown",
+        "worst_trade_return",
+    ]
+    cols = [c for c in preferred if c in summary.columns]
+    return summary.loc[:, cols].copy()
+
+
+def build_report_trades(combined: pd.DataFrame, initial_capital: float) -> tuple[list[dict[str, object]], float]:
+    """Convert combined trades to print_full_report-compatible trade history.
+
+    Returns (trade_history_list, final_capital).
+    """
+    if combined.empty:
+        return [], float(initial_capital)
+    out: list[dict[str, object]] = []
+    capital = float(initial_capital)
+    for _, row in combined.sort_values(["exit_time", "strategy_leg", "entry_time"]).iterrows():
+        ret = float(row["portfolio_return"])
+        pnl = capital * ret
+        capital += pnl
+        leg = str(row.get("strategy_leg", ""))
+        side = str(row.get("side", "LONG"))
+        if side.upper() == "SHORT":
+            display_side = "SHORT"
+        else:
+            display_side = "LONG"
+        exit_reason_raw = str(row.get("exit_reason", row.get("note", "")))
+        if leg == MF_TIME48_LEG:
+            display_exit_reason = f"MF_LOW_SWEEP_TIME48:{exit_reason_raw}"
+        else:
+            display_exit_reason = f"LF_V10B:{exit_reason_raw}"
+        entry_val = safe_float(row.get("entry_price") or row.get("avg_entry") or row.get("first_entry") or np.nan)
+        exit_val = safe_float(row.get("exit_price") or row.get("exit") or np.nan)
+        mfe_val = safe_float(row.get("mfe_on_equity") or row.get("mfe_r") or np.nan)
+        mae_val = safe_float(row.get("mae_on_equity") or row.get("mae_r") or np.nan)
+        fee_val = safe_float(row.get("fee") or row.get("total_entry_fee") or 0.0, 0.0)
+        out.append(
+            {
+                "entry_time": pd.Timestamp(row["entry_time"]),
+                "exit_time": pd.Timestamp(row["exit_time"]),
+                "type": display_side,
+                "entry": entry_val,
+                "exit": exit_val,
+                "pnl": float(pnl),
+                "fee": fee_val,
+                "capital": float(capital),
+                "mfe_r": mfe_val,
+                "mae_r": mae_val,
+                "exit_reason": display_exit_reason,
+            }
+        )
+    return out, capital
+
+
 __all__ = [
     "DEFAULT_LEVERAGE",
     "EDGE_ID_BY_ENGINE",
@@ -742,9 +1071,16 @@ __all__ = [
     "attach_lf_position_metrics",
     "attach_mf_position_metrics",
     "build_equity_curve",
+    "build_guard_summary",
+    "build_margin_overlap_stress",
+    "build_mf_by_lf_state_report",
+    "build_overlap_report",
+    "build_report_trades",
     "build_scenarios",
     "daily_returns",
     "edge_attribution",
     "simulate_portfolio_scenario",
     "standardize_trades",
+    "stress_report",
+    "summarize_period",
 ]
