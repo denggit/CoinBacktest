@@ -86,7 +86,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--min-mf-exposure", type=float, default=0.05)
     p.add_argument("--primary-scenario", default=PRIMARY_SCENARIO)
     p.add_argument("--skip-full-report", action="store_true")
+
+    # Debug / extended output flags (off by default).
     p.add_argument("--write-all-scenario-trades", action="store_true")
+    p.add_argument("--write-all-scenario-yearly-monthly", action="store_true")
+    p.add_argument("--write-legacy-named-full-report", action="store_true")
 
     p.add_argument("--lf-preset", default="turbo")
     p.add_argument("--lf-bear-preset", default="high")
@@ -124,13 +128,48 @@ def _print_parity_failure(first_diff: dict[str, object]) -> None:
     print(f"[parity] reason={first_diff.get('reason')}", flush=True)
 
 
+def _warn_missing_prices(trades: pd.DataFrame) -> None:
+    """Warn if any trades are missing entry_price or exit_price."""
+    if trades.empty:
+        return
+    ep_col = "entry_price_available" if "entry_price_available" in trades.columns else None
+    xp_col = "exit_price_available" if "exit_price_available" in trades.columns else None
+    ep_missing = 0
+    xp_missing = 0
+    if ep_col is not None:
+        ep_missing = int((~trades[ep_col].astype(bool)).sum())
+    else:
+        ep_missing = int(trades["entry_price"].isna().sum()) if "entry_price" in trades.columns else 0
+    if xp_col is not None:
+        xp_missing = int((~trades[xp_col].astype(bool)).sum())
+    else:
+        xp_missing = int(trades["exit_price"].isna().sum()) if "exit_price" in trades.columns else 0
+    if ep_missing > 0:
+        lf_missing = 0
+        if "strategy_leg" in trades.columns:
+            lf_mask = trades["strategy_leg"].eq(LF_LEG)
+            if ep_col:
+                lf_missing = int((lf_mask & ~trades[ep_col].astype(bool)).sum())
+            elif "entry_price" in trades.columns:
+                lf_missing = int((lf_mask & trades["entry_price"].isna()).sum())
+        print(f"[warn] {ep_missing} trades missing entry_price (LF={lf_missing})", flush=True)
+    if xp_missing > 0:
+        lf_missing = 0
+        if "strategy_leg" in trades.columns:
+            lf_mask = trades["strategy_leg"].eq(LF_LEG)
+            if xp_col:
+                lf_missing = int((lf_mask & ~trades[xp_col].astype(bool)).sum())
+            elif "exit_price" in trades.columns:
+                lf_missing = int((lf_mask & trades["exit_price"].isna()).sum())
+        print(f"[warn] {xp_missing} trades missing exit_price (LF={lf_missing})", flush=True)
+
+
 def _build_sizing_report(lf: pd.DataFrame, mf: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
     """Summarize LF risk-budget sizing and MF fixed exposure assumptions."""
     leverage = float(getattr(args, "leverage", DEFAULT_LEVERAGE) or DEFAULT_LEVERAGE)
     exposures = [float(x) for x in str(args.mf_exposures).split(",") if x.strip()]
     rows: list[dict[str, object]] = []
 
-    # --- LF config-level sizing ---
     try:
         mom = MOMENTUM_PRESETS[str(args.lf_preset)]
     except KeyError:
@@ -164,7 +203,6 @@ def _build_sizing_report(lf: pd.DataFrame, mf: pd.DataFrame, args: argparse.Name
             }
         )
 
-    # --- MF assumed fixed exposure ---
     for exp in exposures:
         rows.append(
             {
@@ -188,6 +226,7 @@ def _print_full_report_for_primary(
     """Print human-readable full report for the primary scenario.
 
     Exports 90_full_report_trades.csv and 90_full_report.txt.
+    Cleans up legacy-named files unless --write-legacy-named-full-report.
     """
     if bool(args.skip_full_report) or primary.empty:
         return
@@ -209,13 +248,10 @@ def _print_full_report_for_primary(
     total_days = max((df.index[-1] - df.index[0]).total_seconds() / 86400.0, 1e-9) if len(df) else 1e-9
     report_trades, final_capital = build_report_trades(primary, float(args.initial_capital))
 
-    # Export full report trades as 90_full_report_trades.csv (with display_exit_reason).
+    # Export 90_full_report_trades.csv (standardised name).
     if report_trades:
         trades_df = pd.DataFrame(report_trades)
         write_csv(trades_df, out_dir / "90_full_report_trades.csv", "full_report_trades")
-
-    # Record files present before print_full_report so we can identify its txt output.
-    before_txt = set(out_dir.glob("*.txt"))
 
     print(f"[report] print_full_report primary={args.primary_scenario}", flush=True)
     print_full_report(
@@ -230,14 +266,59 @@ def _print_full_report_for_primary(
         report_dir=out_dir,
     )
 
-    # Rename the txt file that print_full_report just created → 90_full_report.txt.
-    after_txt = set(out_dir.glob("*.txt")) - before_txt
-    for txt_path in after_txt:
+    # print_full_report writes legacy-named files alongside our standard ones.
+    # We compute the exact legacy filenames (same formula as src/utils/report.py).
+    if len(df):
+        start_str = df.index[0].strftime("%Y-%m-%d")
+        end_str = df.index[-1].strftime("%Y-%m-%d")
+    else:
+        start_str = "unknown_start"
+        end_str = "unknown_end"
+    safe_name = REPORT_STRATEGY_NAME.replace(" ", "_").replace("/", "_").replace(":", "")
+    legacy_txt = out_dir / f"{safe_name}_{start_str}_{end_str}_False.txt"
+    legacy_csv = out_dir / f"{safe_name}_{start_str}_{end_str}_False.csv"
+
+    # Rename legacy txt → 90_full_report.txt, then patch footer paths.
+    if legacy_txt.exists():
         target = out_dir / "90_full_report.txt"
-        if txt_path != target:
-            txt_path.replace(target)
-            print(f"[write] full_report_txt -> {target}", flush=True)
-            break
+        if target.exists():
+            target.unlink()
+        legacy_txt.replace(target)
+        print(f"[write] full_report_txt -> {target}", flush=True)
+        _patch_full_report_footer(
+            target,
+            trades_path="90_full_report_trades.csv",
+            txt_path_name="90_full_report.txt",
+        )
+
+    if bool(args.write_legacy_named_full_report):
+        if legacy_csv.exists():
+            print(f"[keep] legacy csv -> {legacy_csv}", flush=True)
+    else:
+        if legacy_csv.exists():
+            legacy_csv.unlink()
+            print(f"[cleanup] removed legacy csv {legacy_csv.name}", flush=True)
+
+
+def _patch_full_report_footer(txt_path: Path, *, trades_path: str, txt_path_name: str) -> None:
+    """Replace legacy file paths in the full report txt footer with standard names."""
+    if not txt_path.exists():
+        return
+    content = txt_path.read_text(encoding="utf-8")
+    changed = False
+    new_lines: list[str] = []
+    for line in content.splitlines(keepends=True):
+        if "交易明细已导出至:" in line and "90_full_report_trades" not in line:
+            new_lines.append(f"📂 交易明细已导出至: {trades_path}\n")
+            changed = True
+        elif "完整报告日志已导出至:" in line and "90_full_report.txt" not in line:
+            new_lines.append(f"📄 完整报告日志已导出至: {txt_path_name}\n")
+            changed = True
+        else:
+            new_lines.append(line)
+    if changed:
+        txt_path.write_text("".join(new_lines), encoding="utf-8")
+        print(f"[patch] updated footer paths in {txt_path.name}", flush=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -287,21 +368,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[warn] primary scenario has no trades: {args.primary_scenario}", flush=True)
 
     trades = standardize_trades(primary)
+    _warn_missing_prices(trades)
+
     equity = build_equity_curve(primary, float(args.initial_capital))
     edge_attr = edge_attribution(trades)
     daily = daily_returns(equity, float(args.initial_capital))
     stress = stress_report(lf_trades, mf_trades, args)
 
     # --- Diagnostic reports ---
-    yearly_all = summarize_period(combined_all, "year")
-    monthly_all = summarize_period(combined_all, "month")
-    yearly_primary = filter_yearly_monthly(yearly_all, args.primary_scenario)
-    monthly_primary = filter_yearly_monthly(monthly_all, args.primary_scenario)
+    yearly_primary = summarize_period(primary, "year") if not primary.empty else pd.DataFrame()
+    monthly_primary = summarize_period(primary, "month") if not primary.empty else pd.DataFrame()
     overlap = build_overlap_report(lf_trades, mf_trades)
     margin_stress = build_margin_overlap_stress(lf_trades, mf_trades, args)
     mf_by_lf_state = build_mf_by_lf_state_report(lf_trades, mf_trades, args)
     guard_summary = build_guard_summary(raw_summary)
     sizing = _build_sizing_report(lf_trades, mf_trades, args)
+
+    # --- (Optional) all-scenario yearly/monthly ---
+    yearly_all: pd.DataFrame | None = None
+    monthly_all: pd.DataFrame | None = None
+    if args.write_all_scenario_yearly_monthly:
+        yearly_all = summarize_period(combined_all, "year")
+        monthly_all = summarize_period(combined_all, "month")
 
     # --- Manifest ---
     manifest = build_manifest(
@@ -336,13 +424,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         guard_summary=guard_summary,
     )
 
-    # --- Optionally write all-scenario yearly/monthly ---
-    if not yearly_all.empty:
+    # --- (Optional) all-scenario yearly/monthly ---
+    if yearly_all is not None and not yearly_all.empty:
         write_csv(yearly_all, out_dir / "08_yearly_all_scenarios.csv", "yearly_all_scenarios")
-    if not monthly_all.empty:
+    if monthly_all is not None and not monthly_all.empty:
         write_csv(monthly_all, out_dir / "09_monthly_all_scenarios.csv", "monthly_all_scenarios")
 
-    # --- Optionally write all-scenario trades ---
+    # --- (Optional) all-scenario trades ---
     if args.write_all_scenario_trades:
         write_all_scenario_trades(out_dir, combined_all)
 
@@ -368,12 +456,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest = dict(manifest)
     manifest["artifacts"] = _current_artifact_names(out_dir)
     write_json(manifest, out_dir / "00_manifest.json", "manifest")
-    finalize_review_pack(out_dir)
+    _finalize_review_pack_clean(out_dir)
     manifest["artifacts"] = _current_artifact_names(out_dir)
     write_json(manifest, out_dir / "00_manifest.json", "manifest")
 
     print("[done] ETH Portfolio V1 refactored backtest complete", flush=True)
     return 1 if parity_failed else 0
+
+
+def _finalize_review_pack_clean(out_dir: str | Path) -> None:
+    """Call finalize_review_pack with default exclusions for debug files."""
+    # Add extra exclusions so GPT review pack only gets the core artifacts.
+    from src.research_common.review_pack import ReviewPackConfig, write_gpt_review_pack
+
+    extra_exclude = frozenset({
+        "80_all_scenario_trades.csv",
+        "08_yearly_all_scenarios.csv",
+        "09_monthly_all_scenarios.csv",
+        "09_decision_draft.json",
+        "06_stress.csv",
+    })
+    config = ReviewPackConfig(
+        report_dir=Path(out_dir),
+        experiment_id="ETH_PORTFOLIO_V1",
+        edge_id="ETH_PORTFOLIO_V1",
+        stage="portfolio_backtest",
+        title="ETH Portfolio V1",
+        decision_focus="portfolio_parity_review",
+        print_log=True,
+        exclude_names=frozenset({
+            "gpt_review_pack.zip",
+            "GPT_REVIEW_PROMPT.md",
+            "REVIEW_PACK_MANIFEST.json",
+        }) | extra_exclude,
+    )
+    write_gpt_review_pack(config)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -113,6 +113,26 @@ def safe_float(value: object, default: float = float("nan")) -> float:
     return out if math.isfinite(out) else default
 
 
+def _notna(value: object) -> bool:
+    """Return True if value is not None and not NaN."""
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
+def coalesce(*values: object) -> object:
+    """Return the first non-None, non-NaN value, or np.nan."""
+    for v in values:
+        if _notna(v):
+            return v
+    return np.nan
+
+
 def weighted_avg_price(old_price: float, old_qty: float, add_price: float, add_qty: float) -> float:
     total = old_qty + add_qty
     if total <= 0:
@@ -607,6 +627,8 @@ def standardize_trades(combined: pd.DataFrame) -> pd.DataFrame:
                 "side",
                 "entry_price",
                 "exit_price",
+                "entry_price_available",
+                "exit_price_available",
                 "qty",
                 "pnl",
                 "fee",
@@ -634,8 +656,18 @@ def standardize_trades(combined: pd.DataFrame) -> pd.DataFrame:
                 "entry_time": pd.Timestamp(row["entry_time"]),
                 "exit_time": pd.Timestamp(row["exit_time"]),
                 "side": "LONG" if side_i >= 0 else "SHORT",
-                "entry_price": safe_float(row.get("entry_price", row.get("avg_entry", row.get("first_entry", np.nan)))),
-                "exit_price": safe_float(row.get("exit_price", row.get("exit", np.nan))),
+                "entry_price": safe_float(
+                    coalesce(row.get("entry_price"), row.get("avg_entry"), row.get("first_entry"), row.get("avg_fill"))
+                ),
+                "exit_price": safe_float(
+                    coalesce(row.get("exit_price"), row.get("exit"), row.get("close_price"))
+                ),
+                "entry_price_available": _notna(
+                    coalesce(row.get("entry_price"), row.get("avg_entry"), row.get("first_entry"), row.get("avg_fill"))
+                ),
+                "exit_price_available": _notna(
+                    coalesce(row.get("exit_price"), row.get("exit"), row.get("close_price"))
+                ),
                 "qty": safe_float(row.get("qty", row.get("filled_weight", np.nan))),
                 "pnl": safe_float(row.get("portfolio_pnl", row.get("pnl", np.nan))),
                 "fee": safe_float(row.get("fee", row.get("total_entry_fee", 0.0)), 0.0),
@@ -1022,21 +1054,18 @@ def build_report_trades(combined: pd.DataFrame, initial_capital: float) -> tuple
         pnl = capital * ret
         capital += pnl
         leg = str(row.get("strategy_leg", ""))
-        side = str(row.get("side", "LONG"))
-        if side.upper() == "SHORT":
-            display_side = "SHORT"
-        else:
-            display_side = "LONG"
+        side_i = 1 if leg == MF_TIME48_LEG else side_from_trade_row(row)
+        display_side = "SHORT" if side_i < 0 else "LONG"
         exit_reason_raw = str(row.get("exit_reason", row.get("note", "")))
         if leg == MF_TIME48_LEG:
             display_exit_reason = f"MF_LOW_SWEEP_TIME48:{exit_reason_raw}"
         else:
             display_exit_reason = f"LF_V10B:{exit_reason_raw}"
-        entry_val = safe_float(row.get("entry_price") or row.get("avg_entry") or row.get("first_entry") or np.nan)
-        exit_val = safe_float(row.get("exit_price") or row.get("exit") or np.nan)
-        mfe_val = safe_float(row.get("mfe_on_equity") or row.get("mfe_r") or np.nan)
-        mae_val = safe_float(row.get("mae_on_equity") or row.get("mae_r") or np.nan)
-        fee_val = safe_float(row.get("fee") or row.get("total_entry_fee") or 0.0, 0.0)
+        entry_val = safe_float(coalesce(row.get("entry_price"), row.get("avg_entry"), row.get("first_entry")))
+        exit_val = safe_float(coalesce(row.get("exit_price"), row.get("exit"), row.get("close_price")))
+        mfe_val = safe_float(coalesce(row.get("mfe_on_equity"), row.get("mfe_r")))
+        mae_val = safe_float(coalesce(row.get("mae_on_equity"), row.get("mae_r")))
+        fee_val = safe_float(coalesce(row.get("fee"), row.get("total_entry_fee")), 0.0)
         out.append(
             {
                 "entry_time": pd.Timestamp(row["entry_time"]),
