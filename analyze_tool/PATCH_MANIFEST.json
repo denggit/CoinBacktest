@@ -14,5 +14,18 @@
   ],
   "modified_files": [],
   "run_command": "python analyze_tool/server.py --host 127.0.0.1 --port 8765",
-  "notes": "Standalone local analyzer. Uses existing src.data_feed loaders. Default is local-cache-only to avoid accidental heavy downloads. No strategy/backtest logic changed."
+  "notes": "Standalone local analyzer. Uses existing src.data_feed loaders. Default is local-cache-only to avoid accidental heavy downloads. No strategy/backtest logic changed.",
+  "updated_in_this_version": [
+    "Plugin marker rendering reverted to the first slim vertical marker style.",
+    "Removed the plugin marker top badge/dot.",
+    "Kept click-to-lock candle detail panel and drag-threshold behavior.",
+    "Click-locked candle now uses a slim white highlight matching the original marker language."
+  ],
+  "tests_run": [
+    "python analyze_tool/selftest.py",
+    "python -m py_compile analyze_tool/server.py analyze_tool/data_service.py analyze_tool/plugin_api.py analyze_tool/plugins/long_shadow.py analyze_tool/selftest.py",
+    "node --check analyze_tool/static/app.js",
+    "python tools/check_import_boundaries.py",
+    "python -m pytest tests/test_import_boundaries.py -q"
+  ]
 }

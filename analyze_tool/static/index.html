@@ -64,6 +64,7 @@
       <section class="panel tips">
         <div class="panel-title">操作</div>
         <p>鼠标滚轮缩放；按住图表左右拖动；移动鼠标查看单根 K 线。</p>
+        <p>点击 K 线可锁定下方详情；点击同一根或空白处取消。拖动时不会误触发锁定。</p>
         <p>Range Bar 使用 close/end_ts 作为横轴时间。</p>
       </section>
     </aside>
@@ -88,7 +89,7 @@
 
       <section class="detail-grid">
         <div class="detail-card">
-          <div class="detail-title">当前 K 线</div>
+          <div id="currentKlineTitle" class="detail-title">当前 K 线</div>
           <div id="ohlcvDetail" class="ohlcv-detail empty">鼠标移动到 K 线上查看数据</div>
         </div>
         <div class="detail-card wide">

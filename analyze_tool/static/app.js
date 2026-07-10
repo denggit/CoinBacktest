@@ -6,10 +6,14 @@ const state = {
   visibleStart: 0,
   visibleEnd: 200,
   hoverIndex: null,
+  selectedIndex: null,
   dragging: false,
   dragX: 0,
+  dragY: 0,
   dragStartStart: 0,
   dragStartEnd: 0,
+  dragMoved: false,
+  dragThreshold: 6,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -137,6 +141,7 @@ async function loadCandles() {
     state.candles = data.candles || [];
     state.markers = [];
     state.hoverIndex = null;
+    state.selectedIndex = null;
     const n = state.candles.length;
     state.visibleEnd = n;
     state.visibleStart = Math.max(0, n - Math.min(320, n));
@@ -200,17 +205,29 @@ function setupCanvas() {
 
   canvas.addEventListener('mousedown', (e) => {
     state.dragging = true;
+    state.dragMoved = false;
     state.dragX = e.clientX;
+    state.dragY = e.clientY;
     state.dragStartStart = state.visibleStart;
     state.dragStartEnd = state.visibleEnd;
   });
-  window.addEventListener('mouseup', () => { state.dragging = false; });
+
+  window.addEventListener('mouseup', (e) => {
+    if (!state.dragging) return;
+    const wasDrag = state.dragMoved || Math.abs(e.clientX - state.dragX) > state.dragThreshold || Math.abs(e.clientY - state.dragY) > state.dragThreshold;
+    state.dragging = false;
+    state.dragMoved = false;
+    if (!wasDrag) handleCanvasClick(e);
+  });
+
   window.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     const inside = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
     if (state.dragging && state.candles.length) {
-      const span = state.visibleEnd - state.visibleStart;
       const dx = e.clientX - state.dragX;
+      const dy = e.clientY - state.dragY;
+      if (Math.abs(dx) > state.dragThreshold || Math.abs(dy) > state.dragThreshold) state.dragMoved = true;
+      const span = state.visibleEnd - state.visibleStart;
       const barsPerPx = span / Math.max(1, plotArea().width);
       const shift = Math.round(-dx * barsPerPx);
       state.visibleStart = state.dragStartStart + shift;
@@ -227,15 +244,48 @@ function setupCanvas() {
     const localY = e.clientY - rect.top;
     const index = indexAtX(localX);
     state.hoverIndex = index;
-    updateDetails(index);
+    if (state.selectedIndex === null) updateDetails(index);
     positionTooltip(index, localX, localY);
     draw();
   });
+
   canvas.addEventListener('mouseleave', () => {
     state.hoverIndex = null;
     tooltip.classList.add('hidden');
     draw();
   });
+}
+
+function handleCanvasClick(e) {
+  if (!state.candles.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const idx = hitTestCandleColumn(x, y);
+  if (idx === null) {
+    setSelectedIndex(null);
+    return;
+  }
+  if (state.selectedIndex === idx) {
+    setSelectedIndex(null);
+    return;
+  }
+  setSelectedIndex(idx);
+}
+
+function hitTestCandleColumn(x, y) {
+  const plot = plotArea();
+  const vol = volumeArea();
+  if (x < plot.left || x > plot.right || y < plot.top || y > vol.bottom) return null;
+  const idx = indexAtX(x);
+  if (idx < state.visibleStart || idx >= state.visibleEnd) return null;
+  return idx;
+}
+
+function setSelectedIndex(index) {
+  state.selectedIndex = index;
+  updateDetails(index);
+  draw();
 }
 
 function clampVisible() {
@@ -304,8 +354,9 @@ function draw() {
   const vol = volumeArea();
   const s = scales();
   drawGrid(plot, vol, s);
-  drawMarkers(plot);
+  drawMarkers(plot, s);
   drawCandles(plot, vol, s);
+  drawSelectedCandle(plot, s);
   drawAxes(plot, vol, s);
   drawCrosshair(plot, s);
 }
@@ -369,7 +420,7 @@ function markerMap() {
   return m;
 }
 
-function drawMarkers(plot) {
+function drawMarkers(plot, s) {
   if (!state.markers.length) return;
   const m = markerMap();
   const span = state.visibleEnd - state.visibleStart;
@@ -380,15 +431,107 @@ function drawMarkers(plot) {
     if (!list) continue;
     const x = xForIndex(i, plot);
     const color = list[0].color || '#facc15';
+
+    // Back to the first-version marker: slim, obvious, and non-invasive.
+    // Removed the top badge/dot to keep the chart cleaner.
     ctx.fillStyle = hexToRgba(color, 0.16);
     ctx.fillRect(x - step * 0.5, plot.top, Math.max(2, step), plot.height);
     ctx.strokeStyle = color;
     ctx.globalAlpha = 0.72;
-    ctx.beginPath(); ctx.moveTo(x, plot.top); ctx.lineTo(x, plot.bottom); ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, plot.top);
+    ctx.lineTo(x, plot.bottom);
+    ctx.stroke();
     ctx.globalAlpha = 1;
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x, plot.top + 10, 4, 0, Math.PI * 2); ctx.fill();
   }
+}
+
+function drawMarkerHalo(x, y, color) {
+  ctx.save();
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = color;
+  ctx.strokeStyle = hexToRgba(color, 0.92);
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = hexToRgba(color, 0.16);
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawMarkerTag(x, y, color, dir) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = color;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (dir === 'up') {
+    ctx.moveTo(0, -7); ctx.lineTo(7, 4); ctx.lineTo(0, 8); ctx.lineTo(-7, 4);
+  } else {
+    ctx.moveTo(0, 7); ctx.lineTo(7, -4); ctx.lineTo(0, -8); ctx.lineTo(-7, -4);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawSelectedCandle(plot, s) {
+  const i = state.selectedIndex;
+  if (i === null || i < state.visibleStart || i >= state.visibleEnd) return;
+  const c = state.candles[i];
+  if (!c) return;
+  const span = state.visibleEnd - state.visibleStart;
+  const step = plot.width / Math.max(1, span);
+  const x = xForIndex(i, plot);
+  const o = Number(c.open), h = Number(c.high), l = Number(c.low), cl = Number(c.close);
+  const yH = yForPrice(h, s, plot), yL = yForPrice(l, s, plot), yO = yForPrice(o, s, plot), yC = yForPrice(cl, s, plot);
+  const bodyW = Math.max(4, Math.min(18, step * 0.76));
+
+  ctx.save();
+  // Click-lock marker: same language as the original plugin marker, but white.
+  // It is intentionally slim so dragging/reading the chart still feels clean.
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(x - step * 0.5, plot.top, Math.max(2, step), plot.height);
+  ctx.strokeStyle = 'rgba(255,255,255,0.90)';
+  ctx.globalAlpha = 0.86;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x, plot.top);
+  ctx.lineTo(x, plot.bottom);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Add a subtle white outline around the selected candle body/wick so the exact K line is unambiguous.
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = 'rgba(255,255,255,0.7)';
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x, yH);
+  ctx.lineTo(x, yL);
+  ctx.stroke();
+  ctx.strokeRect(x - bodyW / 2 - 1.5, Math.min(yO, yC) - 1.5, bodyW + 3, Math.max(3, Math.abs(yC - yO)) + 3);
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  const radius = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
 }
 
 function hexToRgba(hex, alpha) {
@@ -446,9 +589,12 @@ function positionTooltip(index, x, y) {
 
 function updateDetails(index) {
   const c = index === null ? null : state.candles[index];
+  const locked = index !== null && state.selectedIndex === index;
+  const title = $('currentKlineTitle');
+  if (title) title.textContent = locked ? '当前 K 线 · 已锁定' : '当前 K 线';
   if (!c) {
     $('ohlcvDetail').className = 'ohlcv-detail empty';
-    $('ohlcvDetail').textContent = '鼠标移动到 K 线上查看数据';
+    $('ohlcvDetail').textContent = '鼠标移动到 K 线上查看数据；点击 K 线可锁定，点击空白处取消';
     $('extraDetail').className = 'extra-detail empty';
     $('extraDetail').textContent = 'Trade Bar / Range Bar 的更多字段会显示在这里';
     return;
@@ -456,11 +602,17 @@ function updateDetails(index) {
   $('ohlcvDetail').className = 'ohlcv-detail';
   const change = Number(c.close) - Number(c.open);
   const changePct = Number(c.open) ? change / Number(c.open) : 0;
+  const marks = markerMap().get(c.timestamp) || [];
   const items = [
     ['Time', c.timestamp], ['Open', fmt(c.open)], ['High', fmt(c.high)], ['Low', fmt(c.low)], ['Close', fmt(c.close)], ['Volume', fmt(c.volume)], ['Change', fmt(change)], ['Change %', (changePct * 100).toFixed(3) + '%']
   ];
+  if (marks.length) items.push(['Marker', marks.map(m => m.label).join(', ')]);
   $('ohlcvDetail').innerHTML = items.map(([k, v]) => `<div class="metric"><span>${htmlEscape(k)}</span><b>${htmlEscape(v)}</b></div>`).join('');
-  const extra = c.extra || {};
+  const extra = { ...(c.extra || {}) };
+  for (const mark of marks) {
+    for (const [k, v] of Object.entries(mark.fields || {})) extra[`marker_${k}`] = v;
+    if (mark.reason) extra.marker_reason = mark.reason;
+  }
   const entries = Object.entries(extra);
   $('extraDetail').className = entries.length ? 'extra-detail' : 'extra-detail empty';
   $('extraDetail').innerHTML = entries.length ? entries.map(([k, v]) => `<div class="metric"><span>${htmlEscape(k)}</span><b>${htmlEscape(fmtMaybe(v))}</b></div>`).join('') : '没有额外字段';
