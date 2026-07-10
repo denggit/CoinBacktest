@@ -48,7 +48,7 @@ class ReviewPackConfig:
     stage: str = "research"
     title: str | None = None
     decision_focus: str = "edge_review"
-    zip_name: str = f"{experiment_id}_review_pack.zip"
+    zip_name: str = "gpt_review_pack.zip"
     max_file_bytes: int = 8 * 1024 * 1024
     max_total_bytes: int = 40 * 1024 * 1024
     include_suffixes: frozenset[str] = field(default_factory=lambda: frozenset(DEFAULT_INCLUDE_SUFFIXES))

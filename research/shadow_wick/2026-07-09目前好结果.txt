@@ -1,0 +1,90 @@
+先把当前最好结果记下来
+
+当前已知最好候选先记为：
+
+baseline_candidate:
+entry = priority_union
+exit = multi_sweep_higher_low_trail
+entry_delay = 2
+
+当前表现大概：
+
+trades ≈ 332
+total_return ≈ +54.65%
+mean_net ≈ +0.1355% / 笔
+win_rate ≈ 46.08%
+PF ≈ 1.58
+max_drawdown ≈ -9.27%
+fee2 mean_net ≈ +0.0255%
+positive_years = 4/4
+
+当前关键发现：
+
+1. event high reclaim 非常重要。
+2. 扫 event low 后质量明显下降。
+3. 扫 0 次最好，扫 1 次还能接受，扫 2 次开始明显恶化。
+4. higher low trailing 是有效方向。
+5. 固定 TP / 衰减 TP 暂时削弱 edge。
+
+这些先作为 已知好线索 保留，不丢。
+
+
+
+
+
+
+
+
+
+
+
+但最终有效排除还是 vol_regime
+
+08_research_continue_exclusions.csv 只有 13 行，全部是：
+
+lower_volume_shadow_long
+exclude_not_mid_or_extreme_vol
+或者
+exclude_not_mid_high_vol
+
+也就是：
+
+只保留 mid_high_vol / extreme_vol
+或者只保留 mid_high_vol
+
+最好的两个：
+
+A. 保留 mid_high_vol + extreme_vol，60bar
+trades = 1,077
+events_per_month = 26.0
+mean_net = +0.2447%
+win_rate = 56.82%
+PF = 1.445
+bad_rate = 11.61%
+positive_years = 4/4
+max_drawdown = -40.91%
+
+这个比之前 raw baseline 强很多。
+
+年份：
+
+2023: mean +0.6158%, win 62.92%, PF 2.90
+2024: mean +0.3675%, win 62.20%, PF 1.70
+2025: mean +0.0712%, win 50.74%, PF 1.11
+2026: mean +0.4032%, win 64.33%, PF 1.85
+
+这条我觉得是目前最值得继续研究的。
+
+B. 保留 mid_high_vol + extreme_vol，240bar
+trades = 1,077
+mean_net = +0.3186%
+win_rate = 58.40%
+PF = 1.354
+total_return = +1810%
+bad_rate = 6.59%
+positive_years = 3/4
+max_drawdown = -73.44%
+
+240bar 的收益更高，但 2025 是负的，而且回撤大。
+所以我更偏向先研究 60bar，不要被 240bar 的高收益吸引。
+

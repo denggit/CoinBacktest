@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CoinBacktest Analyze Tool</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AE</div>
+        <div>
+          <h1>Analyze Tool</h1>
+          <p>CoinBacktest · OHLCV Lens</p>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-title">数据源</div>
+        <label>数据类型
+          <select id="dataType"></select>
+        </label>
+        <label>Symbol
+          <input id="symbol" value="ETH-USDT-SWAP" />
+        </label>
+        <label id="timeframeWrap">Timeframe
+          <select id="timeframe"></select>
+        </label>
+        <label id="rangeWrap" class="hidden">Range pct
+          <input id="rangePct" type="number" min="0.0001" max="0.05" step="0.0001" value="0.0020" />
+        </label>
+        <div class="grid2">
+          <label>Start
+            <input id="start" type="datetime-local" value="2026-06-01T00:00" />
+          </label>
+          <label>End
+            <input id="end" type="datetime-local" value="2026-06-30T23:59" />
+          </label>
+        </div>
+        <label>返回根数上限
+          <input id="limit" type="number" min="50" max="20000" step="50" value="5000" />
+        </label>
+        <label class="checkline">
+          <input id="localOnly" type="checkbox" checked />
+          <span>只读本地缓存，不自动下载/补数据</span>
+        </label>
+        <button id="loadBtn" class="primary">加载图表</button>
+        <div id="status" class="status">准备加载</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">研究插件</div>
+        <label>功能
+          <select id="pluginSelect"></select>
+        </label>
+        <div id="pluginParams" class="plugin-params"></div>
+        <button id="runPluginBtn" class="secondary">运行插件并标记</button>
+        <button id="clearMarkersBtn" class="ghost">清空标记</button>
+        <div id="pluginSummary" class="mini"></div>
+      </section>
+
+      <section class="panel tips">
+        <div class="panel-title">操作</div>
+        <p>鼠标滚轮缩放；按住图表左右拖动；移动鼠标查看单根 K 线。</p>
+        <p>Range Bar 使用 close/end_ts 作为横轴时间。</p>
+      </section>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h2 id="chartTitle">ETH-USDT-SWAP</h2>
+          <p id="chartSub">等待数据</p>
+        </div>
+        <div class="legend">
+          <span class="dot up"></span>涨
+          <span class="dot down"></span>跌
+          <span class="dot mark"></span>插件标记
+        </div>
+      </div>
+
+      <section class="chart-card">
+        <canvas id="chartCanvas"></canvas>
+        <div id="tooltip" class="tooltip hidden"></div>
+      </section>
+
+      <section class="detail-grid">
+        <div class="detail-card">
+          <div class="detail-title">当前 K 线</div>
+          <div id="ohlcvDetail" class="ohlcv-detail empty">鼠标移动到 K 线上查看数据</div>
+        </div>
+        <div class="detail-card wide">
+          <div class="detail-title">更多字段</div>
+          <div id="extraDetail" class="extra-detail empty">Trade Bar / Range Bar 的更多字段会显示在这里</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

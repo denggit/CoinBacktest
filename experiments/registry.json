@@ -1,6 +1,321 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-07T00:00:00Z",
+  "updated_at": "2026-07-10T06:23:00Z",
   "experiments": [
+    {
+      "id": "ETH_HF_CVD_IMPULSE_SPIKE_STALL_REVERSAL_5S_V1_1",
+      "title": "ETH HF CVD Impulse Spike Stall Reversal 5s V1.1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "hf_cvd_impulse_spike_stall_reversal",
+      "hypothesis": "On 5s trade bars, accumulated CVD extreme impulse plus impulse-bar notional/delta shock followed by immediate stall/reversal may provide short-horizon cost-adjusted reversal expectancy under specific environment and exit structures.",
+      "owner": "research",
+      "created_at": "2026-07-08T14:46:45Z",
+      "updated_at": "2026-07-09T07:57:33Z",
+      "data_required": [
+        "5s_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected. V1.1 tested CVD slope impulse, impulse-bar notional/delta spike, absorption, stall reversal, stop-run reclaim, trend-counter stoprun, multiple environments, and time/TP/SL/CVD-resume exits. candidate_count=0, best mean_net=-0.0621%, best PF=0.7296, fee2 negative, delay1 negative, positive_years=0/4. Notional spike filter was already strong, often 25x-35x mean notional ratio, but still no cost-adjusted edge. Do not continue by parameter expansion."
+    },
+    {
+      "id": "ETH_HF_CVD_IMPULSE_STALL_REVERSAL_5S_V1",
+      "title": "ETH HF CVD Impulse Stall Reversal 5s V1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "hf_cvd_impulse_stall_reversal",
+      "hypothesis": "On 5s trade bars, accumulated CVD may show an extreme one-way impulse followed by immediate slope stall; fading that impulse with a fixed 0.3% TP may provide short-horizon cost-adjusted expectancy.",
+      "owner": "research",
+      "created_at": "2026-07-08T14:21:51Z",
+      "updated_at": "2026-07-08T14:46:36Z",
+      "data_required": [
+        "5s_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected. V1 had very high event frequency and clean causal audit, but no cost-adjusted edge: candidate_count=0, all replay groups had negative mean_net, PF below 1, fee2 negative, delay1 weak, and positive_years=0. Long side was less bad than short but still negative. V1.1 expands the idea with impulse-bar notional/delta spike, absorption, stop-run, environment, and exit-structure hypotheses."
+    },
+    {
+      "id": "ETH_MF_1M_LOWER_SHADOW_VOL_PROFIT_EFFECT_PROBE_V1",
+      "title": "ETH 1m Lower Shadow Vol-Regime Profit Effect Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "lower_shadow_vol_profit_effect_probe",
+      "hypothesis": "The strongest raw-shadow lead, lower_volume_shadow_long inside mid_high/extreme volatility, may contain high-frequency smooth profit-effect subsets identifiable by causal event-bar buckets with better MFE/MAE, faster profit, lower bad-fast-adverse rate, and acceptable trade retention.",
+      "owner": "research",
+      "created_at": "2026-07-10T06:23:00Z",
+      "updated_at": "2026-07-10T06:23:00Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_PANIC_WICK_CANDIDATE_BACKTEST_V1",
+      "title": "ETH 1m Panic Wick Structural Candidate Backtest V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "panic_wick_reversal",
+      "hypothesis": "Two V2 downtrend panic-wick long candidates may remain profitable under structural exits that allow event-low retests but exit confirmed failure; time stop is benchmark only.",
+      "owner": "research",
+      "created_at": "2026-07-09T10:13:01Z",
+      "updated_at": "2026-07-09T10:13:01Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_PANIC_WICK_CANDIDATE_BACKTEST_V1_1_EXIT",
+      "title": "ETH 1m Panic Wick Structural Candidate Backtest V1.1 Exit Upgrade",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "panic_wick_reversal",
+      "hypothesis": "Frozen priority_union/strict panic-wick entries may improve under decay-TP plus multi-sweep/higher-low structural exits; promote only if multiple dimensions improve versus baseline.",
+      "owner": "research",
+      "created_at": "2026-07-09T13:01:50Z",
+      "updated_at": "2026-07-09T13:01:50Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_PANIC_WICK_OVERLAP_PATH_V1",
+      "title": "ETH 1m Panic Wick Candidate Overlap and Path Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "panic_wick_reversal",
+      "hypothesis": "Four V2 panic-wick candidates may share a parent/child structure; overlap and fixed no-overlap path probes are required before deciding whether to keep individual signals, deduplicate a union, or reject broad parent signals.",
+      "owner": "research",
+      "created_at": "2026-07-09T09:18:40Z",
+      "updated_at": "2026-07-09T09:18:40Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_PANIC_WICK_REVERSAL_V2",
+      "title": "ETH 1m Panic Wick Delayed Reversal Research V2",
+      "stage": "research",
+      "status": "research_continue",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "panic_wick_reversal",
+      "hypothesis": "After V1 rejected broad volume-shadow events, high-volatility selloff lower-wick events with downtrend/reclaim/negative-delta absorption show positive net expectancy versus matched panic-context baseline, but frequency and max event gap require candidate backtest/path validation.",
+      "owner": "research",
+      "created_at": "2026-07-09T08:38:44Z",
+      "updated_at": "2026-07-09T09:01:31Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Causal audit clean. Best candidates have positive mean_net, PF>1.4-1.6, positive fee2 and delay1, and positive matched-baseline excess. Not promoted to live/backtest yet because max event gap is 90-110 days and 2025 performance is weak/thin."
+    },
+    {
+      "id": "ETH_MF_1M_RAW_VOLUME_SHADOW_BAD_TRADE_SIGNATURE_PROBE_V1",
+      "title": "ETH 1m Raw Volume Shadow Bad Trade Signature Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "raw_volume_shadow_bad_trade_signature_probe",
+      "hypothesis": "Raw volume-shadow events may become smoother if fast adverse-sweep low-MFE bad paths can be identified by causal event-bar features and excluded one risk feature at a time.",
+      "owner": "research",
+      "created_at": "2026-07-09T16:19:04Z",
+      "updated_at": "2026-07-09T16:19:04Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_RAW_VOLUME_SHADOW_FILTER_PROBE_V1",
+      "title": "ETH 1m Raw Volume Shadow Filter Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "raw_volume_shadow_filter_probe",
+      "hypothesis": "Raw volume-shadow events are noisy, but single causal event-bar features such as close position, volume intensity, prior move, trend regime, volatility regime, session, and order-flow proxies may identify high-frequency high-win-rate subsets suitable for smoothing the ETH portfolio.",
+      "owner": "research",
+      "created_at": "2026-07-09T15:51:09Z",
+      "updated_at": "2026-07-09T15:51:09Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_RAW_VOLUME_SHADOW_PATH_ATLAS_V1",
+      "title": "ETH 1m Raw Volume Shadow Path Atlas V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "raw_volume_shadow_path_atlas",
+      "hypothesis": "Before narrowing into panic/downtrend candidates, raw 1m lower/upper volume-shadow events should be mapped by MFE/MAE, adverse sweep, reclaim, and holdability paths to identify where true edge and failure paths come from.",
+      "owner": "research",
+      "created_at": "2026-07-09T14:16:30Z",
+      "updated_at": "2026-07-09T14:16:30Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_RAW_VOLUME_SHADOW_SIMPLE_EXIT_PROBE_V1",
+      "title": "ETH 1m Raw Volume Shadow Simple Exit Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "raw_volume_shadow_simple_exit_probe",
+      "hypothesis": "After raw path atlas showed MFE but weak raw net edge, test one structural exit hypothesis at a time over lower-long and upper-short shadow events without adding environment filters or entry filters.",
+      "owner": "research",
+      "created_at": "2026-07-09T15:04:41Z",
+      "updated_at": "2026-07-09T15:04:41Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_VOLUME_SHADOW_STRUCTURE_V1",
+      "title": "ETH 1m Volume Shadow Structure Research V1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "volume_shadow_structure",
+      "hypothesis": "1m volume climax long-shadow events may contain edge only under specific structural contexts such as reclaim/reject, prior extension, trend pullback, repeated test, orderflow absorption, or failed reclaim continuation.",
+      "owner": "research",
+      "created_at": "2026-07-09T08:19:51Z",
+      "updated_at": "2026-07-09T08:28:43Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected: all 14 event structures have negative net expectancy after cost, zero positive years, no positive forward horizon, weak matched-baseline excess, and add/flip path probe is negative."
+    },
+    {
+      "id": "ETH_MHF_EDGE_FACTORY_V1",
+      "title": "ETH MHF Edge Factory V1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "mhf_event_factory",
+      "hypothesis": "Short-horizon ETH perpetual microstructure events may provide cost-adjusted MHF expectancy complementary to existing LF/MF edges.",
+      "owner": "research",
+      "created_at": "2026-07-08T09:37:40Z",
+      "updated_at": "2026-07-08T12:11:51Z",
+      "data_required": [
+        "1m_trade_bar",
+        "3m_trade_bar",
+        "5m_trade_bar",
+        "15m_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected as standalone MHF event factory direction. V1 was a broad coarse screen and found no tradable edge. V1.1 and V2 follow-up validation rejected the only frequency-sufficient exhaustion/reclaim long line due to thin fee2 margin, weak yearly stability, moderate win rate, conditional-mining overfit risk, and insufficient MHF character."
+    },
+    {
+      "id": "ETH_MHF_EDGE_FACTORY_V1_1",
+      "title": "ETH MHF Edge Factory V1.1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "mhf_event_factory",
+      "hypothesis": "Validate V1 near-miss ETH MHF exhaustion/reclaim events using best-horizon selection, causal context filters, conditional slicing, and matched-baseline excess return tests.",
+      "owner": "research",
+      "created_at": "2026-07-08T11:28:02Z",
+      "updated_at": "2026-07-08T12:11:17Z",
+      "data_required": [
+        "1m_trade_bar",
+        "3m_trade_bar",
+        "5m_trade_bar",
+        "15m_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "V1.1 completed. It found conditional research-continue long exhaustion/reclaim lines, but V2 replay rejected the only frequency-sufficient combo as standalone edge due to thin fee2 margin, low MHF frequency, moderate win rate, and overfit risk. Do not continue this event factory direction without materially better data such as 1s/5s trade bars or footprint."
+    },
+    {
+      "id": "ETH_MHF_EMA50_SNAPBACK_REJOIN_V1",
+      "title": "ETH MHF EMA50 Snapback Rejoin V1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "mhf_ema50_snapback_rejoin",
+      "hypothesis": "In one-sided 1m ETH trends, a fast wrong-side EMA50 pierce followed by rapid reclaim may provide cost-adjusted continuation expectancy with short fixed or causal dynamic exits.",
+      "owner": "research",
+      "created_at": "2026-07-08T12:27:02Z",
+      "updated_at": "2026-07-08T13:12:52Z",
+      "data_required": [
+        "1m_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected. V1 produced high event frequency but no cost-adjusted edge: all 512 replay variants had negative mean_net, PF below 1, fee2 negative, and delay1 negative. Matched baseline was skipped because no group passed preliminary filters. Causal audit clean. Do not promote to backtest or portfolio."
+    },
+    {
+      "id": "ETH_MHF_EXHAUSTION_LONG_V2_REPLAY",
+      "title": "ETH MHF Exhaustion Long V2 Replay",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "mhf_exhaustion_long",
+      "hypothesis": "V1.1 near-miss ETH exhaustion/reclaim long signals may contain matched-baseline positive excess return after fixed replay, cost, delay, yearly, and frequency validation.",
+      "owner": "research",
+      "created_at": "2026-07-08T11:42:41Z",
+      "updated_at": "2026-07-08T12:11:08Z",
+      "data_required": [
+        "1m_trade_bar",
+        "3m_trade_bar",
+        "5m_trade_bar",
+        "15m_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "V2 replay completed with clean causal audit. Only forced_flow_exhaustion_reclaim w60_strict long in asia_00_08 at 60m passed loose research_continue filters, but it is rejected as standalone edge due to conditional-mining overfit risk, low MHF frequency, 60m hold time, thin fee2 margin, weak yearly stability, and only moderate win rate. Do not promote to formal backtest or portfolio."
+    },
+    {
+      "id": "ETH_MHF_VOL_COMPRESSION_FADE_V1",
+      "title": "ETH MHF Volatility Compression Fade V1",
+      "stage": "research",
+      "status": "rejected",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "mhf_volatility_compression_fade",
+      "hypothesis": "After extended low 1m volatility, a sudden directional volatility expansion that starts contracting may provide cost-adjusted reversal expectancy over short MHF/MF horizons.",
+      "owner": "research",
+      "created_at": "2026-07-08T13:32:25Z",
+      "updated_at": "2026-07-09T07:58:57Z",
+      "data_required": [
+        "1m_trade_bar"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": "Rejected. V1 had high event frequency and clean causal audit, but all 672 replay groups were rejected: candidate_count=0, all mean_net <= 0, all PF < 1, fee2 negative, and delay1 weak. The only matched-baseline group had positive excess versus baseline but event mean_net remained negative. Do not promote to backtest or portfolio. Do not continue this fade definition by parameter expansion."
+    }
   ]
 }

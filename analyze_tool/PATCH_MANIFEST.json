@@ -1,0 +1,18 @@
+{
+  "new_files": [
+    "analyze_tool/README.md",
+    "analyze_tool/__init__.py",
+    "analyze_tool/data_service.py",
+    "analyze_tool/plugin_api.py",
+    "analyze_tool/server.py",
+    "analyze_tool/selftest.py",
+    "analyze_tool/plugins/__init__.py",
+    "analyze_tool/plugins/long_shadow.py",
+    "analyze_tool/static/index.html",
+    "analyze_tool/static/styles.css",
+    "analyze_tool/static/app.js"
+  ],
+  "modified_files": [],
+  "run_command": "python analyze_tool/server.py --host 127.0.0.1 --port 8765",
+  "notes": "Standalone local analyzer. Uses existing src.data_feed loaders. Default is local-cache-only to avoid accidental heavy downloads. No strategy/backtest logic changed."
+}
