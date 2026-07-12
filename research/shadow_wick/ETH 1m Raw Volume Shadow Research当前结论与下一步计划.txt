@@ -1,119 +1,215 @@
-# ETH 1m Raw Volume Shadow Research 当前结论与下一步计划
+# ETH 1m 放量长影线研究阶段总结
 
-2026-07-10
+## 一、研究目标
 
-## 一、当前研究目标
+这条研究线的最终目标不是追求单笔最高收益，而是寻找适合 ETH portfolio 和带单曲线的 MHF/MF 补充型 edge：
 
-当前这条研究线的目标不是找最高 `mean_return` 的单一策略，而是找适合 portfolio 平滑曲线的 MHF / MF 边缘信号。
+* 交易次数尽可能多；
+* 胜率较高；
+* 短期赚钱效应明显；
+* 坏交易能尽快暴露；
+* 回撤和连续亏损可控；
+* 不依赖少数超级大赢家；
+* 可以根据不同信号质量进行仓位、退出和风险分层；
+* 最终用于平滑现有 LF/MF 策略的收益曲线。
 
-优先目标：
+默认研究成本按 OKX 完整一买一卖 0.11% 计算。
 
-1. 交易次数尽可能多。
-2. 胜率尽可能高。
-3. 单笔 mean_net 可以不特别高，但不能太薄到被手续费吃掉。
-4. fee2 后仍然接近正，最好为正。
-5. MAE 可控，坏交易能尽早暴露。
-6. MFE 出现速度快，入场后短期有赚钱效应。
-7. 不靠少数大赢家撑收益。
-8. 2023 / 2024 / 2025 / 2026 尽量稳定，尤其 2025 不能崩。
-9. 回撤低，最大连续亏损低，适合组合进现有 portfolio。
+所有结果必须遵守：
 
-核心思路：
+* closed bar 生成信号；
+* 下一根 bar open 入场；
+* 禁止未来函数；
+* 禁止为了高收益过拟合；
+* 最终候选必须经过成本、延迟和鲁棒性测试。
 
-> 先从路径中分析，不要拿着固定策略倒推结果。先找 MFE / MAE / bad path / good path，再决定过滤条件和退出逻辑。
+默认研究区间：
 
----
-
-## 二、已经验证过的结论
-
-### 1. 裸长影线本身不是 edge
-
-原始事件：
-
-* 放量长下影线，下一根 open 做多。
-* 放量长上影线，下一根 open 做空。
-
-结论：
-
-> 裸长影线直接交易，扣 0.11% 成本后整体不是正期望。
-
-不管 long / short，raw baseline 大多是负的。
-所以不能简单地说“下影线做多 / 上影线做空”就是策略。
+```text
+start-date = 2023-01-01
+end-date = 2026-06-30
+warmup-start-date = 2022-01-01
+```
 
 ---
 
-### 2. 但长影线之后确实存在明显 MFE 空间
+# 二、最初 Idea
 
-Raw shadow path atlas 里看到：
+最初假设：
 
-* 下影线做多，后续经常有不错 MFE。
-* 上影线做空，后续也有 MFE，不是完全没信息。
-* 问题不是没有浮盈空间，而是 MAE 深、路径杂、最终收益捕获差。
+```text
+放量超长下影线 → 下一根开盘做多
+放量超长上影线 → 下一根开盘做空
+```
 
-结论：
+并考虑：
 
-> 长影线事件里有赚钱路径，但 raw universe 太脏，需要过滤坏交易和识别值得持仓的结构。
+* 重复出现时加仓；
+* 反向影线时平仓或反手；
+* 影线极值作为潜在结构止损；
+* 结合成交量、delta、波动率、趋势、session、footprint、range bar 等寻找 edge。
 
----
+研究过程中没有直接把这个 Idea 写成策略，而是按路径逐步拆解：
 
-### 3. 简单 exit 救不了 raw universe
-
-已经测过：
-
-* event low / high 硬止损。
-* close beyond extreme stop。
-* allow 1 sweep。
-* allow 2 sweep。
-* sweep 后 15 根不 reclaim 就出。
-* reclaim mid / full structure 后再失败退出。
-
-结论：
-
-> 在原始长影线全集上，单靠简单 exit 不能把整体变成 edge。
-
-所以当前不是先继续优化 exit，而是应该先找“哪些交易值得进 / 值得持仓”。
+```text
+raw event
+→ MFE/MAE 路径
+→ 简单退出
+→ 单条件过滤
+→ 坏交易画像
+→ 短期赚钱效应
+→ 不同 edge 方向评分
+→ 影线外止损诊断
+```
 
 ---
 
-### 4. 有效单条件过滤主要来自 vol_regime 和 range_pct
+# 三、研究脚本顺序
 
-`03_filter_probe` 里，单条件测试结果显示：
+当前研究集合已经按编号排列：
 
-真正有明显改善的方向：
+```text
+01_eth_1m_raw_volume_shadow_path_atlas_v1.py
+02_eth_1m_raw_volume_shadow_simple_exit_probe_v1.py
+03_eth_1m_raw_volume_shadow_filter_probe_v1.py
+04_eth_1m_raw_volume_shadow_bad_trade_signature_probe_v1.py
+05_eth_1m_lower_shadow_vol_profit_effect_probe_v1.py
+06_eth_1m_lower_shadow_vol_direction_scorecard_probe_v1.py
+07_eth_1m_lower_shadow_vol_wick_stop_probe_v1.py
+```
 
-1. `vol_regime`
-2. `event range_pct`
+以后同一集合的新可运行研究脚本继续：
 
-其他单条件目前没有单独形成明显正期望：
+```text
+08_xxx.py
+09_xxx.py
+```
 
-* volume_ratio
-* close_pos
-* wick_share
-* wick_atr
-* prior_move
-* trend
-* session
-* delta_against_entry
-* taker_against_entry
-
-这些不是永远没用，但作为单独过滤条件，目前不是主线。
+Bug 修复不增加编号。
 
 ---
 
-### 5. 当前最重要主线：lower shadow long + mid_high_vol / extreme_vol
+# 四、01 Raw Shadow Path Atlas 结论
 
-必须记录的主线：
+原始事件量大约：
+
+```text
+lower standard ≈ 51,664
+upper standard ≈ 47,878
+lower extreme ≈ 13,320
+upper extreme ≈ 11,716
+```
+
+## 主要结论
+
+### 1. 裸长影线直接交易没有 edge
+
+不论：
+
+* 下影线做多；
+* 上影线做空；
+* 持有 5/15/30/60/120/240 分钟；
+
+扣除 0.11% 成本后，整体都没有稳定正期望。
+
+因此：
+
+> “出现长影线就反向开仓”不是完整策略。
+
+### 2. 但长影线之后存在明显 MFE
+
+原始长影线虽然最终收益不理想，但后续经常出现较大浮盈：
+
+```text
+lower long MFE mean ≈ +0.95%
+upper short MFE mean ≈ +1.05%
+```
+
+这说明：
+
+> 影线事件不是完全无信息，真正问题是事件全集太脏、MAE太深、持仓路径差异很大。
+
+### 3. 扫影线极值次数非常重要
+
+路径中发现：
+
+```text
+sweep 0 次：质量最好
+sweep 1 次：通常仍可接受
+sweep 2 次：质量开始明显变差
+sweep >= 3：多数变成坏路径
+```
+
+但 `sweep_count` 是持仓后才能知道的路径变量，不能直接作为入场条件。
+
+---
+
+# 五、02 Simple Exit Probe 结论
+
+已经测试：
+
+* 碰 event low/high 硬止损；
+* 收盘突破影线极值止损；
+* 允许一次扫；
+* 允许两次扫；
+* 扫后 15 根内不 reclaim 退出；
+* reclaim mid/full structure 后再次失败退出。
+
+结果：
+
+> 在原始十几万长影线事件全集上，简单 exit 不能把整体变成 edge。
+
+没有任何简单退出方案形成稳定正期望。
+
+因此确认：
+
+```text
+Raw universe 太脏
+仅靠 exit 无法拯救
+必须先找到值得交易的子结构
+```
+
+---
+
+# 六、03 单条件 Filter Probe 结论
+
+分别测试了：
+
+* close position；
+* volume ratio；
+* wick share；
+* wick ATR；
+* event range；
+* prior move；
+* trend；
+* session；
+* delta；
+* taker buy ratio；
+* volatility regime。
+
+## 真正有效的单条件
+
+绝大多数正收益结果来自：
+
+```text
+1. vol_regime
+2. event range_pct
+```
+
+其他特征单独使用时没有稳定形成正 edge。
+
+## 当前第一条明确主线
 
 ```text
 lower_volume_shadow_long
-keep mid_high_vol or extreme_vol
-horizon = 60
++ mid_high_vol / extreme_vol
++ horizon 60
 ```
 
-当前表现大概：
+表现大约：
 
 ```text
-trades ≈ 1077
+trades ≈ 1,077
 events_per_month ≈ 26
 mean_net ≈ +0.2447%
 win_rate ≈ 56.82%
@@ -122,7 +218,7 @@ bad_rate ≈ 11.61%
 positive_years = 4/4
 ```
 
-年份表现大概：
+年份表现：
 
 ```text
 2023: mean +0.6158%, win 62.92%, PF 2.90
@@ -131,398 +227,725 @@ positive_years = 4/4
 2026: mean +0.4032%, win 64.33%, PF 1.85
 ```
 
-结论：
-
-> 这是当前 raw shadow 研究线里最值得继续深挖的方向。
-> 2025 偏弱但没有完全崩，说明有继续优化价值。
+这是当前必须保留的核心发现。
 
 ---
 
-### 6. range_pct 是次级高频线索
+# 七、04 Bad Trade Signature Probe 结论
 
-`range_pct >= 0.35` / `range_pct >= 0.50` 方向有一定提升。
-
-优点：
-
-* 交易次数更多。
-* 比 vol_regime 更接近高频平滑目标。
-
-缺点：
-
-* PF 薄。
-* 回撤大。
-* 2025 / 2026 变弱。
-* 单独作为策略还不够。
-
-结论：
-
-> range_pct 不能单独作为最终策略，但应该作为后续辅助过滤或分层诊断特征保留。
-
----
-
-### 7. bad trade signature 方向验证有效
-
-坏交易定义：
+定义坏交易：
 
 ```text
-fast adverse sweep + MFE < 0.3%
+fast adverse sweep
++ horizon60 MFE < 0.3%
 ```
 
-下影线做多就是：
+下影线做多对应：
 
 ```text
-入场后很快扫 event low，并且后面 MFE < 0.3%
+入场后短时间内扫 event low
+并且未来 60 分钟最大浮盈不足 0.3%
 ```
 
-上影线做空镜像：
-
-```text
-入场后很快扫 event high，并且后面 MFE < 0.3%
-```
+## 坏交易高发特征
 
 坏交易明显集中在：
 
-1. very_low_vol / 低波动环境。
-2. event range 太小。
-3. volume_ratio 不够。
-4. 前面没有足够反向挤压 / panic move。
-5. 影线爆发性不够。
-6. 回收速度不够。
+* very_low_vol；
+* event range 太小；
+* volume ratio 不足；
+* 前面没有足够下跌或 panic move；
+* 影线爆发性不足；
+* 回收速度不足。
 
-结论：
+这证明了：
 
-> 从“找坏交易共性”入手是对的。
-> 先过滤风险大的交易，可能比直接找好交易更适合高胜率平滑型 edge。
+> 从“找坏交易共性”入手是有效研究方法。
 
----
-
-### 8. 扫低次数 / 扫高次数是重要路径变量
-
-Raw path 里看到：
-
-* sweep 0 次质量最好。
-* sweep 1 次还能接受。
-* sweep 2 次开始明显变差。
-* sweep >= 3 基本是坏路径。
-
-但注意：
-
-> sweep_count 是未来路径统计，不能直接作为入场条件。
-> 它只能指导我们找事件当下可见的坏交易共性，或者设计持仓后的风控逻辑。
+相比继续寻找越来越严格的好交易，先剔除明显高风险路径更符合高频、高胜率、平滑曲线的目标。
 
 ---
 
-### 9. short 暂时不是主线，但不能永久丢掉
-
-上影线 short 在 raw atlas 里也有 MFE，但目前：
-
-* raw entry 不行。
-* simple exit 不行。
-* filter probe 没有形成清晰主线。
-* bad trade 画像有一些镜像特征，但还没形成稳定候选。
-
-当前优先级：
-
-```text
-主线：lower shadow long
-次线：upper shadow short 暂时观察，后续可用 range bar / footprint 再复核
-```
-
----
-
-## 三、现在不要做什么
-
-暂时不要做：
-
-1. 不要直接把所有条件组合起来优化。
-2. 不要用未来标签直接做入场过滤。
-3. 不要上来就机器学习交易。
-4. 不要继续在 raw universe 上乱测 exit。
-5. 不要只按 mean_net 排名。
-6. 不要为了高收益牺牲交易次数和胜率。
-7. 不要把 240bar 高收益结果当主线，当前更应该看 60bar 短期赚钱效应。
-
----
-
-## 四、下一步研究计划
-
-下一版建议命名：
-
-```text
-05_eth_1m_lower_shadow_vol_profit_effect_probe_v1.py
-```
+# 八、05 Profit Effect Probe 结论
 
 研究范围固定为：
 
 ```text
+lower shadow long
++ mid_high_vol / extreme_vol
++ horizon60
+```
+
+并加入：
+
+* MFE；
+* MAE；
+* time-to-MFE；
+* fast profit；
+* fast adverse；
+* strong/tradable short-term edge；
+* bad rate；
+* trade retention。
+
+## 主线基准
+
+```text
+trades = 1,077
+mean_net = +0.2447%
+win_rate = 56.82%
+PF = 1.4448
+MFE mean = +1.6023%
+MFE median = +1.2533%
+MAE mean = -1.5533%
+MAE median = -1.0256%
+MFE >= 0.3% rate = 88.12%
+MFE >= 0.5% rate = 79.67%
+```
+
+说明：
+
+> 这条主线的短期赚钱效应确实存在，绝大多数事件在 60 分钟内都曾经给出较明显浮盈。
+
+问题是：
+
+* MAE也很深；
+* 利润捕获不足；
+* 回撤仍大；
+* 2025明显偏弱。
+
+---
+
+# 九、已经找到的几个有效方向
+
+## 1. Panic Depth：最适合核心 Base Sleeve
+
+### prior_move_against_720 >= 2%
+
+```text
+trades = 617
+events_per_month = 14.97
+mean_net = +0.3648%
+win_rate = 61.43%
+PF = 1.69
+bad_rate = 10.37%
+positive_years = 4/4
+2025 PF = 1.39
+```
+
+含义：
+
+> 过去 12 小时已经跌够，再出现中高波动长下影，短期反弹质量更好。
+
+这是目前最稳的核心候选之一。
+
+### prior_move_against_120 >= 2%
+
+```text
+trades = 587
+mean_net = +0.3705%
+win_rate = 60.82%
+PF = 1.72
+bad_rate = 9.37%
+positive_years = 4/4
+```
+
+特点：
+
+```text
+120分钟方向更锐
+720分钟方向更稳
+```
+
+### trend_regime = downtrend
+
+```text
+trades = 691
+mean_net = +0.3273%
+win_rate = 59.33%
+PF = 1.63
+bad_rate = 9.99%
+positive_years = 4/4
+```
+
+保留交易数最多，但质量略低于 panic-depth。
+
+这三个方向高度重叠，本质上属于同一个 edge family：
+
+```text
+下跌环境 / 下跌足够深
+→ 出现放量长下影
+→ 短期反弹
+```
+
+不能把三个条件直接叠加。
+
+---
+
+## 2. Event Intensity：适合利润 Booster
+
+### range_pct >= 0.80%
+
+```text
+trades = 186
+mean_net = +0.7163%
+win_rate = 64.52%
+PF = 2.30
+bad_rate = 6.45%
+```
+
+### wick_atr >= 1.50
+
+```text
+trades = 119
+mean_net = +0.8283%
+win_rate = 67.23%
+PF = 3.00
+bad_rate = 6.72%
+max_drawdown ≈ -7.65%
+```
+
+### extreme_vol_only
+
+```text
+trades = 136
+mean_net = +0.8232%
+win_rate = 61.76%
+PF = 2.37
+bad_rate = 5.88%
+```
+
+这些方向质量很高，但交易数低。
+
+适合未来作为：
+
+* 仓位放大信号；
+* confidence booster；
+* 更宽盈利目标；
+* 更耐心的 trailing；
+* 高等级信号。
+
+不适合替代基础高频 sleeve。
+
+---
+
+## 3. Moderate Absorption：适合确认和加权
+
+```text
+signed_delta_against_entry 0 到 0.20
+或
+taker_against_entry 0.50 到 0.60
+```
+
+表现大约：
+
+```text
+trades = 502
+mean_net = +0.3637%
+win_rate = 59.96%
+PF = 1.72
+bad_rate = 10.56%
+positive_years = 4/4
+```
+
+核心含义：
+
+> 不是卖压越强越好，而是适度主动卖压出现后被吸收更好。
+
+极强卖压可能代表下跌还未结束。
+
+这个方向以后适合接：
+
+* footprint；
+* CVD；
+* raw trades；
+* 主动卖量衰竭；
+* 吸收确认。
+
+---
+
+## 4. Asia Session：强但需要独立复核
+
+```text
+trades = 497
+mean_net = +0.4315%
+win_rate = 60.16%
+PF = 1.94
+positive_years = 4/4
+2025 PF = 1.47
+```
+
+表现很好，但 session 特征容易出现历史时间段偏差。
+
+当前处理：
+
+```text
+记录
+独立复核
+暂不和其他条件组合
+```
+
+---
+
+## 5. 影线比例和振幅
+
+### wick_share
+
+影线比例越大，整体质量趋于提高。
+
+例如：
+
+```text
+wick_share >= 0.80
+trades ≈ 163
+mean_net ≈ +0.414%
+win_rate ≈ 61.35%
+PF ≈ 2.00
+bad_rate ≈ 8.59%
+```
+
+但交易数下降明显。
+
+### event range_pct
+
+结果非常清晰：
+
+```text
+range 0.20%-0.35%：基本无 edge
+range 0.35%-0.50%：很薄
+range 0.50%-0.80%：明显改善
+range >= 0.80%：高纯度
+```
+
+说明：
+
+> 不是所有长下影都一样，必须具有真正的振幅和价格冲击。
+
+### 相对振幅仍值得继续研究
+
+当前已有：
+
+* range_pct；
+* wick_atr；
+* vol_regime。
+
+但还可以继续增加：
+
+```text
+当前range / 前5根平均range
+当前range / 前15根中位range
+当前range / 前30根平均range
+当前range / 前60根平均range
+当前wick / 前N根平均range
+当前volume / 前N根平均volume
+true_range_zscore
+volume_zscore
+```
+
+这可能比固定绝对振幅更适应不同市场阶段。
+
+---
+
+# 十、上影线做空结论
+
+当前结论：
+
+```text
+下影线做多：已有明确主线
+上影线做空：暂时没有稳定主线
+```
+
+上影线 short 在 raw atlas 中有较大 MFE，说明不是完全无信息。
+
+但目前：
+
+* raw short 没有 edge；
+* simple exit 没有救回来；
+* 单条件过滤没有形成高频、高胜率、稳定主线；
+* 少量正结果样本小，不符合当前目标。
+
+后续更可能需要不同结构：
+
+```text
+下跌趋势中的反弹失败
+failed breakout
+主动买量衰竭
+上影线后跌回 event mid/low
+range bar 失败突破
+footprint 买盘被吸收
+```
+
+因此 short 暂时降为次线，不永久放弃。
+
+---
+
+# 十一、06 Direction Scorecard 的框架结论
+
+不同方向不应该直接全部硬过滤，而应该承担不同角色。
+
+## Core Base Sleeve
+
+候选：
+
+```text
+prior_move_against_720 >= 2%
+prior_move_against_120 >= 2%
+trend_downtrend
+```
+
+目标：
+
+* 保持相对较多交易；
+* 提高胜率；
+* 作为基础资金层；
+* 使用相对标准的仓位和退出。
+
+## Profit Booster
+
+候选：
+
+```text
+range_pct >= 0.80%
+wick_atr >= 1.50
+extreme_vol
+volume_ratio 3.0-5.0
+```
+
+目标：
+
+* 高质量低频；
+* 可以提高仓位系数；
+* 允许更大的盈利空间；
+* 不替代 base sleeve。
+
+## Confidence Overlay
+
+候选：
+
+```text
+moderate absorption
+```
+
+目标：
+
+* 不一定决定是否交易；
+* 用于信号加权；
+* 决定入场优先级或仓位倍率；
+* 后续接 footprint/CVD。
+
+## Defensive / Risk State
+
+候选：
+
+```text
+fast adverse sweep
+no reclaim
+repeated sweep
+weak range
+very_low_vol
+```
+
+目标：
+
+* 降仓；
+* 不加仓；
+* 提前退出；
+* 暂停信号；
+* 不是独立赚钱方向。
+
+---
+
+# 十二、07 影线外止损研究结论
+
+测试了：
+
+```text
+hard_wick_stop
+buffered_wick_stop
+close_below_wick_stop
+```
+
+## 结果
+
+没有任何一个可以直接保留为最终止损规则。
+
+Base 主线加止损后：
+
+```text
+hard stop diagnostic mean ≈ -0.019%
+buffered stop diagnostic mean ≈ -0.028%
+close-below stop diagnostic mean ≈ -0.012%
+```
+
+全部明显削弱原始 edge。
+
+## 原因：误伤严重
+
+以 hard stop 为例：
+
+```text
+stop_hit_rate ≈ 74.93%
+stop_hit后仍MFE >= 0.5% ≈ 59.98%
+stop_hit后仍MFE >= 1.0% ≈ 40.40%
+```
+
+以 close-below stop 为例：
+
+```text
+stop_hit_rate ≈ 65.74%
+stop_hit后仍MFE >= 0.5% ≈ 51.69%
+stop_hit后仍MFE >= 1.0% ≈ 34.04%
+```
+
+说明：
+
+> 很多优秀反弹交易会先扫低，甚至收盘跌破 event low，再开始反弹。
+
+因此：
+
+```text
+event_low 不是简单硬止损线
+event_low 是风险状态切换线
+```
+
+## 不扫低的交易极强
+
+例如没有触发 hard stop 的交易：
+
+```text
+trades ≈ 270
+mean_net_60 ≈ +1.475%
+win_rate ≈ 96.30%
+bad_rate = 0%
+```
+
+说明：
+
+```text
+不碰 event_low = 高质量路径
+碰 event_low = 进入风险观察状态
+碰 event_low 后直接砍 = 太早
+碰 event_low 后不能恢复 = 真正失败
+```
+
+---
+
+# 十三、当前对止损的最新理解
+
+下一步不再研究简单：
+
+```text
+价格碰 event_low → 立即止损
+```
+
+而应该研究：
+
+## 影线外失败确认
+
+可能的结构：
+
+```text
+1. sweep_then_no_reclaim_mid
+扫低后不能重新站回 event mid。
+
+2. sweep_then_no_reclaim_high
+扫低后不能重新站回 event high。
+
+3. close_below_low_and_no_reclaim
+收盘跌破 low 后仍无法快速收回。
+
+4. deeper_sweep_failure
+不是第一次扫 low 就退出，而是进一步深破才认错。
+
+5. repeated_sweep_failure
+多次扫 low 且始终不能恢复。
+
+6. post_reclaim_failure
+已经 reclaim 后又重新失守关键结构。
+```
+
+这不是 time exit，而是：
+
+```text
+持仓路径进入风险状态
+→ 观察是否恢复
+→ 无法恢复才退出
+```
+
+---
+
+# 十四、当前最重要的核心结论
+
+## 必须保留
+
+```text
 lower_volume_shadow_long
-keep mid_high_vol or extreme_vol
-horizon = 60
++ mid_high_vol / extreme_vol
++ horizon60 diagnostic
 ```
 
-核心目标：
+这是目前最稳定的研究主线。
 
-> 在当前最强主线内部，加入 MFE / MAE / 短期赚钱效应评分，找出哪些特征能提高胜率、提高 MFE、降低 MAE、降低 bad_rate，同时尽量保留交易次数。
-
----
-
-## 五、下一版要新增的核心评判指标
-
-不要只看最终 60bar return。
-必须加 MFE / MAE。
-
-建议输出：
+## 最适合 Core 的方向
 
 ```text
-mfe_60_mean
-mfe_60_median
-mfe_60_p25
-mfe_60_p75
-mfe_60_p90
-
-mae_60_mean
-mae_60_median
-mae_60_p25
-mae_60_p75
-mae_60_p90
-
-mfe_mae_ratio
-mfe_ge_0p3_rate
-mfe_ge_0p5_rate
-mfe_ge_1p0_rate
-
-mae_le_neg_0p3_rate
-mae_le_neg_0p5_rate
-mae_le_neg_1p0_rate
-
-time_to_mfe_median
-time_to_mae_median
-
-fast_profit_rate
-fast_adverse_rate
-bad_rate
+prior_move_against_720 >= 2%
+prior_move_against_120 >= 2%
+trend_downtrend
 ```
 
-其中最重要的是：
+## 最适合 Booster 的方向
 
 ```text
-mfe_ge_0p3_rate
-mfe_ge_0p5_rate
-fast_profit_rate
-fast_adverse_rate
-mfe_mae_ratio
-bad_rate
+range_pct >= 0.80%
+wick_atr >= 1.50
+extreme_vol
+```
+
+## 最适合确认加权的方向
+
+```text
+moderate delta/taker absorption
+```
+
+## 最重要的风险路径
+
+```text
+快速扫低
+反复扫低
+扫低后不 reclaim
+MAE持续扩大
+MFE始终小于0.3%
+```
+
+## 已确认无效
+
+```text
+裸长影线直接交易
+raw universe简单exit
+event_low一碰就硬止损
+单纯close-below event_low止损
+把所有有效特征直接硬组合
 ```
 
 ---
 
-## 六、高频赚钱效应定义
+# 十五、当前还不能做的事情
 
-理想 MHF / 高频平滑信号应该具备：
+现在还不能：
+
+* 直接进入实盘；
+* 直接注册为 tradable edge；
+* 把全部好条件组合；
+* 用最高分信号替代全部基础信号；
+* 只因为高纯度桶表现好就放弃交易频率；
+* 把 horizon60 当成最终 time exit；
+* 用未来路径标签作为入场条件；
+* 直接使用机器学习黑箱下单。
+
+---
+
+# 十六、推荐下一步
+
+下一版建议：
 
 ```text
-入场后 5-60 分钟内经常先给浮盈；
-MAE 不深；
-坏交易很快暴露；
-胜率高；
-交易数够多；
-不靠少数大赢家；
-手续费后仍有薄正 edge。
+08_eth_1m_lower_shadow_vol_wick_failure_confirmation_probe_v1.py
 ```
 
-可以定义几类路径标签：
+## 研究目标
 
-### 1. strong_short_term_edge
+固定 entry universe：
 
 ```text
-60bar 内 MFE >= 0.5%
-并且 MAE > -0.5%
-并且 time_to_mfe <= time_to_mae
+lower shadow long
++ mid_high_vol / extreme_vol
 ```
 
-### 2. tradable_short_term_edge
+不使用 time exit，不混 TP，不改入场条件。
+
+只研究：
+
+> 扫 event low 后，什么状态才代表真实结构失败？
+
+## 建议逐个验证的假设
 
 ```text
-60bar 内 MFE >= 0.3%
-并且 MAE > -0.7%
+A. 首次扫低后，是否能快速 reclaim event low
+B. 是否能 reclaim event mid
+C. 是否能 reclaim event high
+D. 是否出现第二次/第三次扫低
+E. 后续扫低是否越来越深
+F. 在 event low 下方连续停留的 bars
+G. reclaim 后是否形成 higher low
+H. reclaim 后是否再次失守
 ```
 
-### 3. bad_fast_adverse
+每个假设单独测试，不做组合网格。
+
+## 核心评判指标
 
 ```text
-15bar 内快速扫 event low
-并且 60bar 内 MFE < 0.3%
+trades
+win_rate
+profit_factor
+mean_net
+MFE/MAE
+stop_hit_rate
+stop_misfire_rate
+bad_trade_capture_rate
+recovery_after_sweep_rate
+trade_retention_rate
+2025表现
+positive_years
+max_drawdown
+max_single_loss
 ```
 
-### 4. noisy_trade
+## 核心目标
+
+寻找一种结构：
 
 ```text
-MFE 有，但 MAE 也很深，路径不适合高胜率平滑策略
+允许正常二次测试
+不误伤会反弹的赢家
+尽早砍掉无法恢复的坏交易
+不依赖固定持仓时间
 ```
 
 ---
 
-## 七、短期赚钱效应评分建议
-
-下一版可以做一个综合评分：
+# 十七、后续路线图
 
 ```text
-profit_effect_score =
-交易频率分
-+ 胜率分
-+ PF分
-+ MFE质量分
-+ MAE控制分
-+ MFE/MAE比分
-+ time_to_MFE速度分
-- bad_rate惩罚
-- max_drawdown惩罚
-- 年份不稳定惩罚
-- top5 winner share惩罚
+08 Wick Failure Confirmation Probe
+找到真正的结构失败条件。
+
+09 Profit Protection / Structural Exit Probe
+研究 reclaim 后的 higher-low trailing、MFE giveback、利润保护。
+
+10 Role Candidate Backtest
+Base / Booster / Confidence / Defensive 分角色验证。
+
+11 Footprint / Range Bar Confirmation
+加入更细粒度吸收、主动卖压衰竭和相对振幅确认。
+
+12 Candidate Backtest
+正式定义 entry、SL、exit、仓位、冲突和成本。
+
+13 Robustness
+fee 1x/1.5x/2x/3x、delay 0/1/2/3、年度、月份、参数邻域。
+
+14 Portfolio Overlay
+和现有 LF/MF edge 比较收益、回撤、交易频率、空窗和相关性。
+
+15 AetherEdge Migration
+只有完全通过后，才迁移到 AetherEdge 策略插件。
 ```
 
-排序目标不是最高 mean_net，而是：
-
-```text
-高交易数
-高胜率
-MFE出现快
-MAE浅
-bad_rate低
-fee后不差
-年份稳定
-```
+CoinBacktest 负责研究和回测，AetherEdge 负责实盘执行，两者不能混淆。
 
 ---
 
-## 八、下一版要测试的单维度
+# 十八、当前阶段一句话总结
 
-在 `lower long + mid_high/extreme_vol + horizon60` 内部，逐个测试：
-
-1. `range_pct` 分层
-   看 range 是否越大越好，还是过大反而容易极端风险。
-
-2. `volume_ratio` 分层
-   看是否量能爆发不足的下影线更容易失败。
-
-3. `wick_share` 分层
-   看下影线占比是否能区分质量。
-
-4. `close_pos` 分层
-   看收盘回收到 K 线高位是否更好。
-
-5. `prior_move_against_30` / `prior_move_against_120`
-   看是否必须先有足够下跌 / panic move。
-
-6. `event_range_pct` 与 ATR 关系
-   看是不是必须是相对当前波动足够大的事件。
-
-7. `delta_ratio` / `taker_buy_ratio`
-   看主动卖压吸收是否有帮助，但不要作为当前第一主线。
-
-8. `session`
-   只做诊断，不优先作为过滤主线。
-
-9. `fast reclaim`
-   事件后 1-3 根是否快速 reclaim event mid / event high。
-
-10. `fast adverse sweep`
-    入场后 5 / 10 / 15 根是否快速扫 event low。
-
----
-
-## 九、机器学习是否需要
-
-当前不建议直接上机器学习做交易信号。
-
-更合理的顺序：
-
-1. 先用规则和分层分析把主线拆清楚。
-2. 如果特征很多、单维度发现不够，再用 ML 做 diagnostic。
-3. ML 先做 bad-trade classifier 或 short-term-edge classifier。
-4. 用模型输出 feature importance / SHAP / split gain。
-5. 再把模型发现转成简单规则。
-6. 最后再进入 candidate backtest。
-
-ML 的用途不是一开始就黑箱交易，而是帮助回答：
-
-```text
-哪些事件容易成为 fast adverse + low MFE？
-哪些事件容易 60bar 内 MFE >= 0.5%？
-哪些特征最能解释短期赚钱效应？
-```
-
----
-
-## 十、当前路线图
-
-### 01 Raw Shadow Path Atlas
-
-已完成。
-结论：raw shadow 有 MFE，但裸交易不是 edge。
-
-### 02 Simple Exit Probe
-
-已完成。
-结论：simple exit 救不了 raw universe。
-
-### 03 Filter Probe
-
-已完成。
-结论：有效单条件主要是 `vol_regime` 和 `range_pct`。
-
-### 04 Bad Trade Signature Probe
-
-已完成。
-结论：坏交易集中在低波动、小 range、弱爆发、弱 panic 的结构里。
-
-### 05 Lower Shadow Vol Profit Effect Probe
-
-下一步。
-目标：围绕 `lower long + mid_high/extreme_vol + horizon60`，加入 MFE/MAE/短期赚钱效应评分，找更高胜率、更平滑的过滤方向。
-
-### 06 Candidate Backtest
-
-等 05 找到稳定过滤后再做。
-不能现在直接上。
-
-### 07 Footprint / Range Bar Confirmation
-
-等 1m trade bar 方向稳定后，再用 footprint / range bar 做确认。
-不要现在混入，避免不知道 edge 来自哪里。
-
----
-
-## 十一、当前必须保留的核心结论
-
-必须记录：
-
-```text
-lower_volume_shadow_long + mid_high_vol / extreme_vol + horizon60
-```
-
-这是当前最强主线之一。
-
-必须记录：
-
-```text
-range_pct 是次级高频线索。
-```
-
-必须记录：
-
-```text
-bad trade signature = fast adverse sweep + MFE < 0.3%
-```
-
-必须记录：
-
-```text
-高频赚钱效应要看 MFE/MAE，不应该只看 60bar mean_return。
-```
-
-必须记录：
-
-```text
-当前目标是高交易数、高胜率、平滑 portfolio 曲线，不是追求单策略最高收益。
-```
+> 原始放量长影线不是策略，但“中高/极端波动环境下、此前已经充分下跌的放量长下影反弹”具有明确短期赚钱效应。当前真正需要解决的不是有没有 edge，而是如何在不损失大量交易数的情况下，识别扫低后能够恢复的好路径与无法恢复的坏路径，并用 Base、Booster、Confidence、Defensive 四类评分实现不同仓位和退出管理。

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-10T06:23:00Z",
+  "updated_at": "2026-07-10T09:32:15Z",
   "experiments": [
     {
       "id": "ETH_HF_CVD_IMPULSE_SPIKE_STALL_REVERSAL_5S_V1_1",
@@ -39,6 +39,24 @@
       "notes": "Rejected. V1 had very high event frequency and clean causal audit, but no cost-adjusted edge: candidate_count=0, all replay groups had negative mean_net, PF below 1, fee2 negative, delay1 weak, and positive_years=0. Long side was less bad than short but still negative. V1.1 expands the idea with impulse-bar notional/delta spike, absorption, stop-run, environment, and exit-structure hypotheses."
     },
     {
+      "id": "ETH_MF_1M_LOWER_SHADOW_VOL_DIRECTION_SCORECARD_PROBE_V1",
+      "title": "ETH 1m Lower Shadow Vol-Regime Direction Scorecard Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "lower_shadow_vol_direction_scorecard_probe",
+      "hypothesis": "Different causal sub-directions inside the remembered lower_volume_shadow_long + mid_high/extreme_vol lead may deserve different sizing, entry priority, exit, and risk policies; score them separately for smooth high-frequency, profit-max, and defensive-risk roles before any combined filter/backtest.",
+      "owner": "research",
+      "created_at": "2026-07-10T08:41:36Z",
+      "updated_at": "2026-07-10T08:41:36Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
       "id": "ETH_MF_1M_LOWER_SHADOW_VOL_PROFIT_EFFECT_PROBE_V1",
       "title": "ETH 1m Lower Shadow Vol-Regime Profit Effect Probe V1",
       "stage": "research",
@@ -49,6 +67,24 @@
       "owner": "research",
       "created_at": "2026-07-10T06:23:00Z",
       "updated_at": "2026-07-10T06:23:00Z",
+      "data_required": [
+        "okx_trade_bar_1m"
+      ],
+      "reports": {},
+      "decision": {},
+      "notes": ""
+    },
+    {
+      "id": "ETH_MF_1M_LOWER_SHADOW_VOL_WICK_STOP_PROBE_V1",
+      "title": "ETH 1m Lower Shadow Vol-Regime Wick Stop Probe V1",
+      "stage": "research",
+      "status": "running",
+      "symbol": "ETH-USDT-SWAP",
+      "family": "lower_shadow_vol_wick_stop_probe",
+      "hypothesis": "Inside the remembered lower_volume_shadow_long + mid_high/extreme_vol lead, the event lower-wick outside area may act as a structural failure line; test hard, buffered, and close-below wick stops by measuring bad-trade capture, MFE misfire, no-stop quality, and direction-level stop suitability without using horizon60 as a desired time exit.",
+      "owner": "research",
+      "created_at": "2026-07-10T09:32:15Z",
+      "updated_at": "2026-07-10T09:32:15Z",
       "data_required": [
         "okx_trade_bar_1m"
       ],
