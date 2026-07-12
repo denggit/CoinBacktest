@@ -1,8 +1,9 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-@Author     : Zijun Deng
-@Date       : 7/12/2026 3:58 PM
-@File       : __init__.py.py
-@Description: 
-"""
+"""Panic selloff rejection/recovery research line."""
+
+from .common.panic_episode import (
+    PanicEpisodeConfig,
+    PanicEpisodeResult,
+    detect_panic_episodes,
+)
+
+__all__ = ["PanicEpisodeConfig", "PanicEpisodeResult", "detect_panic_episodes"]

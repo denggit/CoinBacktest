@@ -28,7 +28,7 @@ from src.data_feed.okx_trade_bar_loader import OKXTradeBarLoader  # noqa: E402
 TIME_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
 TRADE_BAR_TIMEFRAMES = ["1s", "5s", "10s", "15s", "30s", "1m", "5m", "15m", "30m", "1H", "4H", "1D"]
 RANGE_PRESETS = [0.0015, 0.0020, 0.0025]
-MAX_RETURN_BARS = 20000
+MAX_RETURN_BARS = 2000000
 
 
 @dataclass(frozen=True)

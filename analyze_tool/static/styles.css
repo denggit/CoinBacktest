@@ -120,6 +120,7 @@ button:hover { filter: brightness(1.06); }
 .dot.up { background: var(--green); }
 .dot.down { background: var(--red); }
 .dot.mark { background: var(--yellow); }
+.episode-swatch { width: 18px; height: 10px; display: inline-block; border: 1px solid rgba(251,146,60,0.55); border-radius: 3px; background: rgba(251,146,60,0.14); margin-right: 4px; }
 
 .chart-card {
   position: relative;

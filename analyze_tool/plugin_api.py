@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """Plugin API for analyze_tool.
 
-Plugins are intentionally small and data-frame based: a plugin receives the
-already-loaded OHLCV/order-flow DataFrame and returns marker rows for the chart.
-This keeps research annotations separate from src.data_feed and strategy code.
+Plugins receive an already-loaded DataFrame and return point markers plus
+optional time regions.  Keeping this protocol small lets research detectors be
+shared without pushing chart-specific code into ``src.data_feed``.
 """
 
 from __future__ import annotations
@@ -53,6 +53,10 @@ class Marker:
     color: str = "#facc15"
     reason: str = ""
     fields: dict[str, Any] = field(default_factory=dict)
+    role: str = "node"
+    position: str = "top"
+    price: float | None = None
+    symbol: str = "auto"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -61,17 +65,45 @@ class Marker:
             "color": self.color,
             "reason": self.reason,
             "fields": self.fields,
+            "role": self.role,
+            "position": self.position,
+            "price": self.price,
+            "symbol": self.symbol,
+        }
+
+
+@dataclass(frozen=True)
+class Region:
+    start_timestamp: str
+    end_timestamp: str
+    label: str = ""
+    color: str = "#fb923c"
+    opacity: float = 0.08
+    status: str = ""
+    fields: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start_timestamp": self.start_timestamp,
+            "end_timestamp": self.end_timestamp,
+            "label": self.label,
+            "color": self.color,
+            "opacity": self.opacity,
+            "status": self.status,
+            "fields": self.fields,
         }
 
 
 @dataclass(frozen=True)
 class PluginRunResult:
     markers: list[Marker]
+    regions: list[Region] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "markers": [m.as_dict() for m in self.markers],
+            "regions": [r.as_dict() for r in self.regions],
             "summary": self.summary,
         }
 

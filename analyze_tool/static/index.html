@@ -33,14 +33,14 @@
         </label>
         <div class="grid2">
           <label>Start
-            <input id="start" type="datetime-local" value="2026-06-01T00:00" />
+            <input id="start" type="datetime-local" value="2026-01-01T00:00" />
           </label>
           <label>End
             <input id="end" type="datetime-local" value="2026-06-30T23:59" />
           </label>
         </div>
         <label>返回根数上限
-          <input id="limit" type="number" min="50" max="20000" step="50" value="5000" />
+          <input id="limit" type="number" min="50" max="2000000" step="50" value="200000" />
         </label>
         <label class="checkline">
           <input id="localOnly" type="checkbox" checked />
@@ -66,6 +66,7 @@
         <p>鼠标滚轮缩放；按住图表左右拖动；移动鼠标查看单根 K 线。</p>
         <p>点击 K 线可锁定下方详情；点击同一根或空白处取消。拖动时不会误触发锁定。</p>
         <p>Range Bar 使用 close/end_ts 作为横轴时间。</p>
+        <p>多阶段恐慌插件：橙=开始观察，红=加速，紫=低点候选，黄=衰减/拒绝，绿=恢复确认。</p>
       </section>
     </aside>
 
@@ -78,7 +79,8 @@
         <div class="legend">
           <span class="dot up"></span>涨
           <span class="dot down"></span>跌
-          <span class="dot mark"></span>插件标记
+          <span class="dot mark"></span>节点
+          <span class="episode-swatch"></span>Episode区间
         </div>
       </div>
 
@@ -100,6 +102,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260712-swing-arrows"></script>
 </body>
 </html>

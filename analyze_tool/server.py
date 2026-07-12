@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import sys
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Mapping
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -33,13 +36,90 @@ from analyze_tool.data_service import (  # noqa: E402
     parse_request,
 )
 from analyze_tool.plugins import build_default_registry  # noqa: E402
+from analyze_tool.plugins.swing_extreme_move import SwingExtremeMovePlugin  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLUGIN_REGISTRY = build_default_registry()
 
 
+def _ensure_swing_extreme_registered() -> None:
+    """Register Swing Extreme even when plugins/__init__.py is an older file.
+
+    Several analyze_tool patches historically replaced ``plugins/__init__.py``.
+    Registering this plugin here makes the server robust to an old static
+    registry and prevents the UI/backend mismatch seen on Windows installs.
+    """
+
+    registered = {str(item["id"]) for item in PLUGIN_REGISTRY.list_plugins()}
+    if SwingExtremeMovePlugin.plugin_id not in registered:
+        PLUGIN_REGISTRY.register(SwingExtremeMovePlugin())
+
+
+_ensure_swing_extreme_registered()
+
+
+def registered_plugin_ids() -> list[str]:
+    return [str(item["id"]) for item in PLUGIN_REGISTRY.list_plugins()]
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert plugin/data payloads to strict JSON values.
+
+    Python's default ``json.dumps`` emits ``NaN``/``Infinity`` tokens, but those
+    are not valid JSON and browser ``JSON.parse`` rejects them.  Trade-bar
+    features naturally contain missing warmup values, so sanitize centrally
+    instead of requiring every plugin to clean every nested ``fields`` dict.
+    """
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if type(value).__name__ in {"NAType", "NaTType"}:
+        return None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    to_list = getattr(value, "tolist", None)
+    if callable(to_list):
+        try:
+            converted_list = to_list()
+        except (TypeError, ValueError):
+            converted_list = value
+        if converted_list is not value:
+            return _json_safe(converted_list)
+
+    # NumPy/pandas scalar types expose ``item``.  This also converts np.float64
+    # NaN/Inf, np.int64 and np.bool_ without importing heavy modules here.
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            converted = item()
+        except (TypeError, ValueError):
+            converted = value
+        if converted is not value:
+            return _json_safe(converted)
+
+    # pandas.NA/NaT and similar scalar sentinels are not JSON serializable.
+    try:
+        missing = value != value
+    except Exception:
+        missing = False
+    if isinstance(missing, bool) and missing:
+        return None
+
+    return value
+
+
 def json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    safe_payload = _json_safe(payload)
+    raw = json.dumps(safe_payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(raw)))
@@ -74,7 +154,7 @@ class AnalyzeToolHandler(BaseHTTPRequestHandler):
                 self._serve_static(path.removeprefix("/static/"))
                 return
             if path == "/api/health":
-                json_response(self, {"ok": True, "project_root": str(PROJECT_ROOT)})
+                json_response(self, {"ok": True, "project_root": str(PROJECT_ROOT), "plugins": registered_plugin_ids()})
                 return
             if path == "/api/config":
                 json_response(self, {"ok": True, **config_payload()})
@@ -102,7 +182,11 @@ class AnalyzeToolHandler(BaseHTTPRequestHandler):
                 plugin_id = str(payload.get("plugin_id", ""))
                 plugin_params = payload.get("params") or {}
                 df, meta = load_dataframe(req)
-                plugin = PLUGIN_REGISTRY.get(plugin_id)
+                try:
+                    plugin = PLUGIN_REGISTRY.get(plugin_id)
+                except KeyError as exc:
+                    available = ", ".join(registered_plugin_ids()) or "<none>"
+                    raise KeyError(f"unknown plugin: {plugin_id}; registered: {available}") from exc
                 result = plugin.run(df, plugin_params)
                 out = result.as_dict()
                 out["ok"] = True
@@ -155,6 +239,7 @@ def main() -> int:
     httpd = ThreadingHTTPServer((args.host, args.port), AnalyzeToolHandler)
     url = f"http://{args.host}:{args.port}"
     print(f"[analyze_tool] serving CoinBacktest analyzer: {url}")
+    print(f"[analyze_tool] registered plugins: {', '.join(registered_plugin_ids())}")
     print("[analyze_tool] press Ctrl+C to stop")
     try:
         httpd.serve_forever()

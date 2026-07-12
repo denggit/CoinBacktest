@@ -3,6 +3,8 @@ const state = {
   plugins: [],
   candles: [],
   markers: [],
+  regions: [],
+  timestampIndex: new Map(),
   visibleStart: 0,
   visibleEnd: 200,
   hoverIndex: null,
@@ -87,7 +89,7 @@ async function init() {
 
   $('loadBtn').addEventListener('click', loadCandles);
   $('runPluginBtn').addEventListener('click', runPlugin);
-  $('clearMarkersBtn').addEventListener('click', () => { state.markers = []; $('pluginSummary').textContent = ''; draw(); });
+  $('clearMarkersBtn').addEventListener('click', () => { state.markers = []; state.regions = []; $('pluginSummary').textContent = ''; draw(); });
   setupCanvas();
   resizeCanvas();
   window.addEventListener('resize', () => { resizeCanvas(); draw(); });
@@ -140,6 +142,8 @@ async function loadCandles() {
     const data = await getJson('/api/candles?' + qs(currentDataParams()));
     state.candles = data.candles || [];
     state.markers = [];
+    state.regions = [];
+    state.timestampIndex = new Map(state.candles.map((c, i) => [c.timestamp, i]));
     state.hoverIndex = null;
     state.selectedIndex = null;
     const n = state.candles.length;
@@ -166,9 +170,10 @@ async function runPlugin() {
       body: JSON.stringify({ data: currentDataParams(), plugin_id: plugin.id, params: pluginParams() })
     });
     state.markers = data.markers || [];
+    state.regions = data.regions || [];
     const s = data.summary || {};
-    $('pluginSummary').textContent = `匹配 ${s.matched ?? 0} / ${s.input_rows ?? 0} 根；上影 ${s.upper_count ?? '-'}，下影 ${s.lower_count ?? '-'}`;
-    setStatus(`插件完成：${plugin.name}，标记 ${state.markers.length} 根`);
+    $('pluginSummary').textContent = s.display || `匹配 ${s.matched ?? 0} / ${s.input_rows ?? 0} 根；上影 ${s.upper_count ?? '-'}，下影 ${s.lower_count ?? '-'}`;
+    setStatus(`插件完成：${plugin.name}，节点 ${state.markers.length} 个，区间 ${state.regions.length} 个`);
     draw();
   } catch (err) {
     setStatus(err.message, true);
@@ -354,8 +359,9 @@ function draw() {
   const vol = volumeArea();
   const s = scales();
   drawGrid(plot, vol, s);
-  drawMarkers(plot, s);
+  drawRegions(plot);
   drawCandles(plot, vol, s);
+  drawMarkers(plot, s);
   drawSelectedCandle(plot, s);
   drawAxes(plot, vol, s);
   drawCrosshair(plot, s);
@@ -420,6 +426,56 @@ function markerMap() {
   return m;
 }
 
+function indexForTimestamp(timestamp) {
+  const exact = state.timestampIndex.get(timestamp);
+  if (exact !== undefined) return exact;
+  const target = Date.parse(String(timestamp).replace(' ', 'T'));
+  if (!Number.isFinite(target) || !state.candles.length) return null;
+  let lo = 0, hi = state.candles.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = Number(state.candles[mid].time);
+    if (value < target) lo = mid + 1;
+    else if (value > target) hi = mid - 1;
+    else return mid;
+  }
+  return Math.max(0, Math.min(state.candles.length - 1, lo));
+}
+
+function drawRegions(plot) {
+  if (!state.regions.length) return;
+  const span = Math.max(1, state.visibleEnd - state.visibleStart);
+  const step = plot.width / span;
+  for (const region of state.regions) {
+    const startIndex = indexForTimestamp(region.start_timestamp);
+    const endIndex = indexForTimestamp(region.end_timestamp);
+    if (startIndex === null || endIndex === null) continue;
+    if (endIndex < state.visibleStart || startIndex >= state.visibleEnd) continue;
+    const leftIndex = Math.max(startIndex, state.visibleStart);
+    const rightIndex = Math.min(endIndex, state.visibleEnd - 1);
+    const x1 = xForIndex(leftIndex, plot) - step * 0.5;
+    const x2 = xForIndex(rightIndex, plot) + step * 0.5;
+    const color = region.color || '#fb923c';
+    const opacity = Number.isFinite(Number(region.opacity)) ? Number(region.opacity) : 0.08;
+    ctx.save();
+    ctx.fillStyle = hexToRgba(color, opacity);
+    ctx.fillRect(x1, plot.top, Math.max(1, x2 - x1), plot.height);
+    ctx.strokeStyle = hexToRgba(color, Math.min(0.55, opacity * 4.5));
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x1, plot.top + 0.5, Math.max(1, x2 - x1), plot.height - 1);
+    ctx.restore();
+  }
+}
+
+function regionsAtIndex(index) {
+  if (index === null || index < 0) return [];
+  return state.regions.filter(region => {
+    const startIndex = indexForTimestamp(region.start_timestamp);
+    const endIndex = indexForTimestamp(region.end_timestamp);
+    return startIndex !== null && endIndex !== null && index >= startIndex && index <= endIndex;
+  });
+}
+
 function drawMarkers(plot, s) {
   if (!state.markers.length) return;
   const m = markerMap();
@@ -430,21 +486,91 @@ function drawMarkers(plot, s) {
     const list = m.get(c.timestamp);
     if (!list) continue;
     const x = xForIndex(i, plot);
-    const color = list[0].color || '#facc15';
+    list.forEach((marker, order) => {
+      const color = marker.color || '#facc15';
+      const role = marker.role || 'node';
+      ctx.save();
+      ctx.fillStyle = hexToRgba(color, role === 'signal' ? 0.16 : 0.10);
+      ctx.fillRect(x - step * 0.5, plot.top, Math.max(2, step), plot.height);
+      ctx.strokeStyle = color;
 
-    // Back to the first-version marker: slim, obvious, and non-invasive.
-    // Removed the top badge/dot to keep the chart cleaner.
-    ctx.fillStyle = hexToRgba(color, 0.16);
-    ctx.fillRect(x - step * 0.5, plot.top, Math.max(2, step), plot.height);
-    ctx.strokeStyle = color;
-    ctx.globalAlpha = 0.72;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, plot.top);
-    ctx.lineTo(x, plot.bottom);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+      // 节点标记的实心线
+      // ctx.globalAlpha = role === 'signal' ? 0.95 : 0.70;
+      // ctx.lineWidth = role === 'signal' ? 1.6 : 1;
+      // ctx.beginPath();
+      // ctx.moveTo(x, plot.top);
+      // ctx.lineTo(x, plot.bottom);
+      // ctx.stroke();
+      // ctx.globalAlpha = 1;
+
+      const fallbackPrice = marker.position === 'low' ? Number(c.low) : Number(c.high);
+      const markerPrice = Number.isFinite(Number(marker.price)) ? Number(marker.price) : fallbackPrice;
+      const baseY = yForPrice(markerPrice, s, plot);
+      const y = Math.max(plot.top + 10, Math.min(plot.bottom - 10, baseY + order * 12));
+      drawStageSymbol(x, y, color, role, marker.position || 'top', marker.symbol || 'auto');
+      if (span <= 220) drawCompactMarkerLabel(x, y, marker.label || '', color, marker.position || 'top', order);
+      ctx.restore();
+    });
   }
+}
+
+function drawStageSymbol(x, y, color, role, position, symbol = 'auto') {
+  ctx.save();
+  ctx.shadowBlur = role === 'signal' ? 12 : 7;
+  ctx.shadowColor = color;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = '#07111f';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+
+  if (symbol === 'arrow_down') {
+    ctx.moveTo(x - 3, y - 8);
+    ctx.lineTo(x + 3, y - 8);
+    ctx.lineTo(x + 3, y);
+    ctx.lineTo(x + 7, y);
+    ctx.lineTo(x, y + 9);
+    ctx.lineTo(x - 7, y);
+    ctx.lineTo(x - 3, y);
+  } else if (symbol === 'arrow_up') {
+    ctx.moveTo(x, y - 9);
+    ctx.lineTo(x + 7, y);
+    ctx.lineTo(x + 3, y);
+    ctx.lineTo(x + 3, y + 8);
+    ctx.lineTo(x - 3, y + 8);
+    ctx.lineTo(x - 3, y);
+    ctx.lineTo(x - 7, y);
+  } else if (role === 'signal') {
+    ctx.moveTo(x, y - 8); ctx.lineTo(x + 7, y + 5); ctx.lineTo(x - 7, y + 5);
+  } else if (role === 'start') {
+    ctx.moveTo(x, y + 8); ctx.lineTo(x + 6, y - 4); ctx.lineTo(x - 6, y - 4);
+  } else {
+    ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 6); ctx.lineTo(x - 6, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCompactMarkerLabel(x, y, label, color, position, order) {
+  if (!label) return;
+  ctx.save();
+  ctx.font = '10px system-ui';
+  const text = label.length > 11 ? label.slice(0, 11) : label;
+  const width = ctx.measureText(text).width + 8;
+  const labelY = position === 'low' ? y + 10 + order * 2 : y - 18 - order * 2;
+  const left = x - width / 2;
+  ctx.fillStyle = 'rgba(2,6,23,0.78)';
+  roundRect(ctx, left, labelY, width, 16, 5);
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(color, 0.72);
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, labelY + 8);
+  ctx.restore();
 }
 
 function drawMarkerHalo(x, y, color) {
@@ -581,7 +707,10 @@ function positionTooltip(index, x, y) {
   const c = state.candles[index];
   if (!c) return;
   const marks = markerMap().get(c.timestamp) || [];
-  tooltip.innerHTML = `<b>${htmlEscape(c.timestamp)}</b><br>O ${fmt(c.open)} · H ${fmt(c.high)}<br>L ${fmt(c.low)} · C ${fmt(c.close)}<br>V ${fmt(c.volume)}${marks.length ? `<br><span style="color:${marks[0].color}">● ${htmlEscape(marks.map(m => m.label).join(', '))}</span>` : ''}`;
+  const regions = regionsAtIndex(index);
+  const markerLine = marks.length ? `<br><span style="color:${marks[0].color}">◆ ${htmlEscape(marks.map(m => m.label).join(', '))}</span>` : '';
+  const regionLine = regions.length ? `<br><span style="color:${regions[0].color || '#fb923c'}">▧ ${htmlEscape(regions.map(r => `${r.label || 'episode'} · ${r.status || ''}`).join(', '))}</span>` : '';
+  tooltip.innerHTML = `<b>${htmlEscape(c.timestamp)}</b><br>O ${fmt(c.open)} · H ${fmt(c.high)}<br>L ${fmt(c.low)} · C ${fmt(c.close)}<br>V ${fmt(c.volume)}${markerLine}${regionLine}`;
   tooltip.style.left = Math.min(x + 18, canvas.getBoundingClientRect().width - 240) + 'px';
   tooltip.style.top = Math.max(12, y - 28) + 'px';
   tooltip.classList.remove('hidden');
@@ -603,15 +732,21 @@ function updateDetails(index) {
   const change = Number(c.close) - Number(c.open);
   const changePct = Number(c.open) ? change / Number(c.open) : 0;
   const marks = markerMap().get(c.timestamp) || [];
+  const regions = regionsAtIndex(index);
   const items = [
     ['Time', c.timestamp], ['Open', fmt(c.open)], ['High', fmt(c.high)], ['Low', fmt(c.low)], ['Close', fmt(c.close)], ['Volume', fmt(c.volume)], ['Change', fmt(change)], ['Change %', (changePct * 100).toFixed(3) + '%']
   ];
   if (marks.length) items.push(['Marker', marks.map(m => m.label).join(', ')]);
+  if (regions.length) items.push(['Episode', regions.map(r => `${r.label || 'episode'} · ${r.status || ''}`).join(', ')]);
   $('ohlcvDetail').innerHTML = items.map(([k, v]) => `<div class="metric"><span>${htmlEscape(k)}</span><b>${htmlEscape(v)}</b></div>`).join('');
   const extra = { ...(c.extra || {}) };
   for (const mark of marks) {
     for (const [k, v] of Object.entries(mark.fields || {})) extra[`marker_${k}`] = v;
     if (mark.reason) extra.marker_reason = mark.reason;
+  }
+  for (const region of regions) {
+    for (const [k, v] of Object.entries(region.fields || {})) extra[`episode_${k}`] = v;
+    if (region.status) extra.episode_status = region.status;
   }
   const entries = Object.entries(extra);
   $('extraDetail').className = entries.length ? 'extra-detail' : 'extra-detail empty';

@@ -1,8 +1,17 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-@Author     : Zijun Deng
-@Date       : 7/12/2026 3:58 PM
-@File       : __init__.py.py
-@Description: 
-"""
+"""Shared modules for the panic selloff rejection/recovery research line."""
+
+from .panic_episode import (
+    PanicEpisode,
+    PanicEpisodeConfig,
+    PanicEpisodeResult,
+    PanicNode,
+    detect_panic_episodes,
+)
+
+__all__ = [
+    "PanicEpisode",
+    "PanicEpisodeConfig",
+    "PanicEpisodeResult",
+    "PanicNode",
+    "detect_panic_episodes",
+]
