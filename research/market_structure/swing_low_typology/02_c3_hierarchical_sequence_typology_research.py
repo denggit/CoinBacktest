@@ -52,7 +52,7 @@ from research.market_structure.swing_low_typology.common.swing_low_dataset impor
 )
 
 SCRIPT_NAME = "02_c3_hierarchical_sequence_typology_research"
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 EXPERIMENT_ID = "ETH_1M_SWING_LOW_C3_HIERARCHICAL_TYPOLOGY_02"
 EDGE_ID = "RESEARCH_ONLY_ETH_SWING_LOW_C3_SUBTYPES"
 TITLE = "ETH Swing Low C3 Hierarchical Sequence Typology 02"
@@ -166,6 +166,15 @@ def _validate_stage1_manifest(args: argparse.Namespace, report_dir: Path) -> Non
         actual = manifest.get(key)
         if str(actual) != str(expected):
             mismatches.append(f"{key}: stage1={actual}, requested={expected}")
+    label_policy = {
+        "swing_extreme_price_source": "low",
+        "swing_entry_price_source": "next_bar_open",
+        "swing_target_observation_source": "future_closed_bar_close",
+    }
+    for key, expected in label_policy.items():
+        actual = manifest.get(key)
+        if actual != expected:
+            mismatches.append(f"{key}: stage1={actual}, required={expected}")
     if mismatches:
         raise RuntimeError("Stage-1 report is incompatible: " + "; ".join(mismatches))
 
@@ -464,6 +473,10 @@ def run_research(args: argparse.Namespace) -> Path:
         "train_end_date": args.train_end_date,
         "target_move_pct": float(args.target_move_pct),
         "max_completion_bars": int(args.max_completion_bars),
+        "swing_extreme_price_source": "low",
+        "swing_entry_price_source": "next_bar_open",
+        "swing_target_observation_source": "future_closed_bar_close",
+        "swing_return_definition": "future_closed_bar_close / next_bar_open - 1",
         "parent_cluster": args.parent_cluster,
         "parent_event_count": int(len(parent)),
         "second_stage_feature_count": int(len(feature_columns)),
@@ -472,7 +485,7 @@ def run_research(args: argparse.Namespace) -> Path:
         "phase_bins": int(args.phase_bins),
         "selected_k": int(frozen.selected_k),
         "feature_families": family_summary["family"].tolist(),
-        "causal_policy": "future only labels swing universe; subtype features end at extreme bar close",
+        "causal_policy": "swing extreme uses low; tradable confirmation uses next-bar open to future closed-bar close; subtype features end at extreme bar close",
     }
     (out_dir / "00_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"

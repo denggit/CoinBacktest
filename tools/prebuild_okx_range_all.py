@@ -25,6 +25,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -51,6 +52,7 @@ from src.data_feed.okx_range_bar_loader import (  # noqa: E402
     range_code,
 )
 from src.data_feed.okx_range_footprint_loader import OKXRangeFootprintLoader, price_step_code  # noqa: E402
+from src.data_feed.range_builder_checkpoint import RangeBuilderCheckpointStore  # noqa: E402
 from src.utils.log import get_logger  # noqa: E402
 
 logger = get_logger("OKXRangeAllPrebuilder")
@@ -91,8 +93,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--data-dir", default=None)
     p.add_argument("--range-bars-db-name", default="okx_range_bars.db")
     p.add_argument("--footprints-db-name", default="okx_range_footprints.db")
+    p.add_argument("--state-db-name", default="okx_range_builder_state.db", help="Exact range-builder continuation checkpoints.")
     p.add_argument("--url-template", default=DEFAULT_OKX_TRADES_URL_TEMPLATE)
     p.add_argument("--chunksize", type=int, default=1_000_000, help="Rows per raw trades CSV chunk. Use smaller values on low-memory servers.")
+    p.add_argument("--min-chunksize", type=int, default=100_000, help="Smallest automatic retry chunk after MemoryError.")
+    p.add_argument("--memory-retries", type=int, default=4, help="Retry the failed UTC day with a halved chunk size after MemoryError.")
     p.add_argument("--flush-rows", type=int, default=1_000_000, help="Flush buffered footprint rows to SQLite after this many rows per range.")
     p.add_argument("--contract-value", type=float, default=None)
     p.add_argument("--large-trade-notional-threshold", type=float, default=DEFAULT_LARGE_TRADE_NOTIONAL_THRESHOLD)
@@ -103,7 +108,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--skip-footprints", action="store_true", help="Only build range bars; do not write footprint DB.")
     p.add_argument("--continue-on-error", action="store_true")
     p.add_argument("--sleep-sec", type=float, default=0.0, help="Sleep after each UTC day.")
-    p.add_argument("--warmup-days", type=int, default=1, help="When resuming partial cache, start this many UTC days before the first missing day to rebuild cross-day active range-bar state.")
+    p.add_argument("--warmup-days", type=int, default=1, help="Deprecated compatibility option; exact checkpoints replace approximate warmup replay.")
     return p.parse_args(argv)
 
 
@@ -196,6 +201,8 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
         raise ValueError("--skip-bars and --skip-footprints cannot both be set")
     if float(args.price_step) <= 0:
         raise ValueError("--price-step must be > 0")
+    if int(args.chunksize) <= 0 or int(args.min_chunksize) <= 0:
+        raise ValueError("--chunksize and --min-chunksize must be > 0")
 
     started = time.time()
     days = list(date_range(start, end))
@@ -212,9 +219,16 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
             for rp in range_pcts
         ]
 
+    # Capture the oldest known coverage before a force rebuild deletes rows.  It
+    # is the deterministic legacy replay origin when no checkpoint exists yet.
+    coverage_starts: list[date] = []
+    for loader in [*bar_loaders.values(), *fp_loaders.values()]:
+        first = loader._earliest_coverage_day()
+        if first is not None:
+            coverage_starts.append(first)
+
     missing_bar_days: dict[float, set[date]] = {rp: set() for rp in range_pcts}
     missing_fp_days: dict[float, set[date]] = {rp: set() for rp in range_pcts}
-
     for rp in range_pcts:
         if rp in bar_loaders:
             if args.force_rebuild:
@@ -228,6 +242,35 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
                 missing_fp_days[rp] = set(days)
             else:
                 missing_fp_days[rp] = {d for d in days if not fp_loaders[rp]._has_coverage(d)}
+
+    # A path-dependent cache cannot safely contain a hole followed by a kept
+    # tail.  Once a day is missing, rebuild that cache's entire requested tail;
+    # otherwise later bar boundaries/IDs may have been produced from bad state.
+    for rp in range_pcts:
+        if rp in bar_loaders and missing_bar_days[rp]:
+            first_gap = min(missing_bar_days[rp])
+            tail = {d for d in days if d >= first_gap}
+            if tail - missing_bar_days[rp]:
+                logger.warning(
+                    "[RANGE-ALL-GAP-INVALIDATES-BAR-TAIL] range=%s first_gap=%s rebuild_through=%s",
+                    range_code(rp),
+                    first_gap,
+                    max(tail),
+                )
+                bar_loaders[rp]._delete_cached_days(sorted(tail))
+                missing_bar_days[rp] = tail
+        if rp in fp_loaders and missing_fp_days[rp]:
+            first_gap = min(missing_fp_days[rp])
+            tail = {d for d in days if d >= first_gap}
+            if tail - missing_fp_days[rp]:
+                logger.warning(
+                    "[RANGE-ALL-GAP-INVALIDATES-FOOTPRINT-TAIL] range=%s first_gap=%s rebuild_through=%s",
+                    range_code(rp),
+                    first_gap,
+                    max(tail),
+                )
+                fp_loaders[rp]._delete_cached_days(sorted(tail))
+                missing_fp_days[rp] = tail
 
     needed_days = [
         d
@@ -249,25 +292,63 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
             for rp in range_pcts
         ]
 
-    warmup_days = max(0, int(args.warmup_days))
-    effective_start = max(start, needed_days[0] - timedelta(days=warmup_days))
-    effective_end = needed_days[-1]
-    process_days = [d for d in days if effective_start <= d <= effective_end]
-
+    builder_price_step = None if args.skip_footprints else float(args.price_step)
     builders = {
         rp: RangeBarBuilder(
             range_pct=rp,
             contract_value=(bar_loaders.get(rp) or fp_loaders[rp]).contract_value,
             large_trade_notional_threshold=(bar_loaders.get(rp) or fp_loaders[rp]).large_trade_notional_threshold,
-            price_step=None if args.skip_footprints else float(args.price_step),
+            price_step=builder_price_step,
         )
         for rp in range_pcts
     }
+    data_dir = Path(args.data_dir) if args.data_dir else PROJECT_ROOT / "data"
+    checkpoint_store = RangeBuilderCheckpointStore(data_dir / args.state_db_name)
+    checkpoint_keys = {
+        rp: checkpoint_store.cache_key(
+            symbol=args.symbol,
+            range_pct=rp,
+            price_step=builder_price_step,
+            contract_value=builders[rp].contract_value,
+            large_trade_notional_threshold=builders[rp].large_trade_notional_threshold,
+        )
+        for rp in range_pcts
+    }
+    # Any checkpoint at/after the first rebuilt day belongs to the invalidated
+    # tail and must not survive an interrupted repair.
+    checkpoint_store.delete_from(checkpoint_keys.values(), utc_day=needed_days[0])
+
+    first_missing = needed_days[0]
+    checkpoint_day = None
+    if coverage_starts:
+        checkpoint_day = checkpoint_store.latest_common_day(
+            checkpoint_keys.values(), before_day=first_missing - timedelta(days=1)
+        )
+    if checkpoint_day is not None:
+        for rp in range_pcts:
+            state = checkpoint_store.load(cache_key=checkpoint_keys[rp], utc_day=checkpoint_day)
+            if state is None:  # defensive; latest_common_day guarantees this
+                raise RuntimeError(f"missing checkpoint state for {range_code(rp)} at {checkpoint_day}")
+            builders[rp].restore_state(state)
+        process_start = checkpoint_day + timedelta(days=1)
+        resume_mode = f"checkpoint:{checkpoint_day}"
+    else:
+        # Legacy databases have coverage but no builder state.  Exact recovery
+        # must replay from the original coverage origin; a one-day warmup is not
+        # causal-equivalent for path-dependent range bars.
+        process_start = min([start, *coverage_starts]) if coverage_starts else start
+        resume_mode = f"legacy_exact_replay:{process_start}"
+
+    effective_end = needed_days[-1]
+    process_days = list(date_range(process_start, effective_end))
+    if int(args.warmup_days) != 1:
+        logger.warning("[RANGE-ALL-WARMUP-IGNORED] --warmup-days is deprecated; exact checkpoint replay is used")
 
     bars_written = {rp: 0 for rp in range_pcts}
     footprints_written = {rp: 0 for rp in range_pcts}
     bars_closed_for_fp = {rp: 0 for rp in range_pcts}
     chunks_read = 0
+    working_chunksize = int(args.chunksize)
     flush_rows = max(1, int(args.flush_rows))
 
     def flush_footprints(rp: float, pending: list[dict]) -> int:
@@ -280,18 +361,28 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
         pending.clear()
         return flushed
 
+    def purge_incomplete_day(day: date) -> None:
+        # Only days without coverage are purged.  This removes rows committed by
+        # a failed attempt while preserving every previously completed UTC day.
+        for rp in range_pcts:
+            if rp in bar_loaders and day in missing_bar_days[rp]:
+                bar_loaders[rp]._delete_cached_days([day])
+            if rp in fp_loaders and day in missing_fp_days[rp]:
+                fp_loaders[rp]._delete_cached_days([day])
+
     logger.info(
-        "[RANGE-ALL-PREBUILD-START] symbol=%s ranges=%s step=%s days=%s->%s effective_days=%s->%s warmup_days=%s bars_db=%s footprints_db=%s chunksize=%s flush_rows=%s force=%s mode=one_pass_bars_and_footprints",
+        "[RANGE-ALL-PREBUILD-START] symbol=%s ranges=%s step=%s requested_days=%s->%s process_days=%s->%s resume=%s bars_db=%s footprints_db=%s state_db=%s chunksize=%s flush_rows=%s force=%s mode=exact_checkpoint_one_pass",
         args.symbol,
         ",".join(range_code(x) for x in range_pcts),
         args.price_step,
         start,
         end,
-        effective_start,
+        process_start,
         effective_end,
-        warmup_days,
+        resume_mode,
         "SKIP" if args.skip_bars else next(iter(bar_loaders.values())).db_path,
         "SKIP" if args.skip_footprints else next(iter(fp_loaders.values())).db_path,
+        checkpoint_store.db_path,
         args.chunksize,
         flush_rows,
         bool(args.force_rebuild),
@@ -299,59 +390,112 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
 
     for day in process_days:
         raw_file = raw_loader._ensure_raw_trade_file(day)
-        logger.info(
-            "[RANGE-ALL-DAY-START] symbol=%s ranges=%s step=%s utc_day=%s raw=%s",
-            args.symbol,
-            ",".join(range_code(x) for x in range_pcts),
-            args.price_step,
-            day,
-            raw_file,
-        )
-        day_bar_rows = {rp: 0 for rp in range_pcts}
-        day_fp_rows = {rp: 0 for rp in range_pcts}
-        day_fp_bars = {rp: 0 for rp in range_pcts}
-        pending_bars: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
-        pending_fps: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
+        day_start_states = {rp: builders[rp].export_state() for rp in range_pcts}
+        attempt_chunksize = working_chunksize
+        max_retries = max(0, int(args.memory_retries))
+        attempt = 0
 
-        for raw in iter_trade_csv_chunks(raw_file, chunksize=int(args.chunksize)):
-            chunks_read += 1
-            chunk = normalize_trade_chunk_fast(raw)
+        while True:
             for rp in range_pcts:
-                bars, footprints = builders[rp].process_chunk(chunk)
-                if bars:
-                    if rp in bar_loaders:
-                        bars_to_write = [b for b in bars if _end_day(b) in missing_bar_days[rp]]
-                        if bars_to_write:
-                            pending_bars[rp].extend(bars_to_write)
-                            bars_written[rp] += len(bars_to_write)
-                            day_bar_rows[rp] += len(bars_to_write)
-                    if rp in fp_loaders:
-                        fp_bar_count = sum(1 for b in bars if _end_day(b) in missing_fp_days[rp])
-                        bars_closed_for_fp[rp] += fp_bar_count
-                        day_fp_bars[rp] += sum(1 for b in bars if _end_day(b) == day and day in missing_fp_days[rp])
-                if footprints and rp in fp_loaders:
-                    fps_to_write = [fp for fp in footprints if _end_day(fp) in missing_fp_days[rp]]
-                    if fps_to_write:
-                        pending_fps[rp].extend(fps_to_write)
-                        footprints_written[rp] += len(fps_to_write)
-                        day_fp_rows[rp] += len(fps_to_write)
-                        if len(pending_fps[rp]) >= flush_rows:
-                            flush_footprints(rp, pending_fps[rp])
+                builders[rp].restore_state(day_start_states[rp])
+            purge_incomplete_day(day)
+            logger.info(
+                "[RANGE-ALL-DAY-START] symbol=%s ranges=%s step=%s utc_day=%s raw=%s chunksize=%s attempt=%s",
+                args.symbol,
+                ",".join(range_code(x) for x in range_pcts),
+                args.price_step,
+                day,
+                raw_file,
+                attempt_chunksize,
+                attempt + 1,
+            )
+            day_bar_rows = {rp: 0 for rp in range_pcts}
+            day_fp_rows = {rp: 0 for rp in range_pcts}
+            day_fp_bars = {rp: 0 for rp in range_pcts}
+            pending_bars: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
+            pending_fps: dict[float, list[dict]] = {rp: [] for rp in range_pcts}
+            attempt_chunks = 0
+            try:
+                for raw in iter_trade_csv_chunks(raw_file, chunksize=attempt_chunksize):
+                    attempt_chunks += 1
+                    chunk = normalize_trade_chunk_fast(raw)
+                    for rp in range_pcts:
+                        bars, footprints = builders[rp].process_chunk(chunk)
+                        if bars:
+                            if rp in bar_loaders:
+                                bars_to_write = [b for b in bars if _end_day(b) in missing_bar_days[rp]]
+                                if bars_to_write:
+                                    pending_bars[rp].extend(bars_to_write)
+                                    day_bar_rows[rp] += len(bars_to_write)
+                            if rp in fp_loaders:
+                                day_fp_bars[rp] += sum(
+                                    1 for b in bars if _end_day(b) == day and day in missing_fp_days[rp]
+                                )
+                        if footprints and rp in fp_loaders:
+                            fps_to_write = [fp for fp in footprints if _end_day(fp) in missing_fp_days[rp]]
+                            if fps_to_write:
+                                pending_fps[rp].extend(fps_to_write)
+                                day_fp_rows[rp] += len(fps_to_write)
+                                if len(pending_fps[rp]) >= flush_rows:
+                                    flush_footprints(rp, pending_fps[rp])
+                    del chunk
+                    del raw
 
-        for rp in range_pcts:
-            if rp in bar_loaders and pending_bars[rp]:
-                loader = bar_loaders[rp]
-                df = loader._bars_to_frame(pending_bars[rp])
-                loader._upsert_bars(df)
-            if rp in fp_loaders:
-                flush_footprints(rp, pending_fps[rp])
-            if rp in bar_loaders and day in missing_bar_days[rp]:
-                bar_loaders[rp]._mark_coverage(day, rows=day_bar_rows[rp])
-            if rp in fp_loaders and day in missing_fp_days[rp]:
-                fp_loaders[rp]._mark_coverage(day, rows=day_fp_rows[rp], bars=day_fp_bars[rp])
+                for rp in range_pcts:
+                    if rp in bar_loaders and pending_bars[rp]:
+                        df = bar_loaders[rp]._bars_to_frame(pending_bars[rp])
+                        bar_loaders[rp]._upsert_bars(df)
+                    if rp in fp_loaders:
+                        flush_footprints(rp, pending_fps[rp])
+
+                # Coverage is the commit marker.  It is written only after all
+                # rows for this UTC day were successfully persisted.
+                for rp in range_pcts:
+                    if rp in bar_loaders and day in missing_bar_days[rp]:
+                        bar_loaders[rp]._mark_coverage(day, rows=day_bar_rows[rp])
+                    if rp in fp_loaders and day in missing_fp_days[rp]:
+                        fp_loaders[rp]._mark_coverage(day, rows=day_fp_rows[rp], bars=day_fp_bars[rp])
+
+                for rp in range_pcts:
+                    checkpoint_store.save(
+                        cache_key=checkpoint_keys[rp],
+                        utc_day=day,
+                        symbol=args.symbol,
+                        range_pct=rp,
+                        price_step=builder_price_step,
+                        builder=builders[rp],
+                    )
+
+                chunks_read += attempt_chunks
+                for rp in range_pcts:
+                    bars_written[rp] += day_bar_rows[rp]
+                    footprints_written[rp] += day_fp_rows[rp]
+                    bars_closed_for_fp[rp] += day_fp_bars[rp]
+                working_chunksize = attempt_chunksize
+                break
+            except MemoryError:
+                chunks_read += attempt_chunks
+                attempt += 1
+                pending_bars.clear()
+                pending_fps.clear()
+                raw = None
+                chunk = None
+                gc.collect()
+                next_chunksize = max(int(args.min_chunksize), attempt_chunksize // 2)
+                if attempt > max_retries or next_chunksize >= attempt_chunksize:
+                    raise
+                logger.warning(
+                    "[RANGE-ALL-MEMORY-RETRY] utc_day=%s old_chunksize=%s new_chunksize=%s retry=%s/%s; failed-day rows will be purged before retry",
+                    day,
+                    attempt_chunksize,
+                    next_chunksize,
+                    attempt,
+                    max_retries,
+                )
+                attempt_chunksize = next_chunksize
 
         logger.info(
-            "[RANGE-ALL-DAY-DONE] symbol=%s step=%s utc_day=%s bars_by_range=%s footprints_by_range=%s fp_bars_by_range=%s chunks_read_total=%s",
+            "[RANGE-ALL-DAY-DONE] symbol=%s step=%s utc_day=%s bars_by_range=%s footprints_by_range=%s fp_bars_by_range=%s chunks_read_total=%s checkpoint=saved",
             args.symbol,
             args.price_step,
             day,
@@ -401,7 +545,6 @@ def prebuild_range_all(args: argparse.Namespace, start: date, end: date) -> list
     )
     return results
 
-
 def print_summary(results: list[RangeAllResult]) -> None:
     print("=" * 130)
     print("OKX Range ALL prebuild summary")
@@ -426,6 +569,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         results = prebuild_range_all(args, start, end)
     except Exception as exc:
         logger.exception("[RANGE-ALL-PREBUILD-FAILED] symbol=%s ranges=%s step=%s error=%s", args.symbol, args.range_pcts, args.price_step, exc)
+        logger.error(
+            "[RANGE-ALL-FAILURE-SAFETY] Days already marked complete remain preserved. "
+            "The failed UTC day has no trusted coverage marker and will be purged/replayed on the next run."
+        )
         if not args.continue_on_error:
             print_summary([
                 RangeAllResult(

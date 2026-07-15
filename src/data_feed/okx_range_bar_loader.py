@@ -22,7 +22,7 @@ import os
 import sqlite3
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -147,7 +147,12 @@ def normalize_trade_chunk_fast(raw: pd.DataFrame) -> pd.DataFrame:
             "side": df.get("side", "").loc[ok].astype(str).str.lower() if "side" in df.columns else "",
         }
     )
-    return out.sort_values("timestamp").reset_index(drop=True)
+    # Official OKX files are normally already chronological.  Avoid allocating
+    # a full argsort index for every million-row chunk unless it is actually
+    # needed; this is the allocation that commonly fails under memory pressure.
+    if not out["timestamp"].is_monotonic_increasing:
+        out = out.sort_values("timestamp", kind="stable")
+    return out.reset_index(drop=True)
 
 
 def iter_trade_csv_chunks(path: str | Path, *, chunksize: int) -> Iterator[pd.DataFrame]:
@@ -212,6 +217,112 @@ class RangeBarBuilder:
         self.day_seq: dict[str, int] = {}
         self.cvd_volume = 0.0
         self.cvd_notional = 0.0
+
+    def export_state(self) -> dict[str, Any]:
+        """Return a JSON-serializable exact continuation checkpoint.
+
+        Range bars are path dependent.  Recreating a builder one day before a
+        gap is not sufficient because the active bar can cross UTC midnight and
+        CVD is cumulative.  The checkpoint therefore contains every mutable
+        field required to continue with byte-for-byte equivalent bar boundaries.
+        """
+
+        active: dict[str, Any] | None = None
+        if self.active is not None:
+            active = {
+                "bar_id": int(self.active.bar_id),
+                "start_ts": pd.Timestamp(self.active.start_ts).isoformat(),
+                "open": float(self.active.open),
+                "high": float(self.active.high),
+                "low": float(self.active.low),
+                "close": float(self.active.close),
+                "volume": float(self.active.volume),
+                "notional": float(self.active.notional),
+                "trades_count": int(self.active.trades_count),
+                "buy_volume": float(self.active.buy_volume),
+                "sell_volume": float(self.active.sell_volume),
+                "buy_notional": float(self.active.buy_notional),
+                "sell_notional": float(self.active.sell_notional),
+                "buy_trades_count": int(self.active.buy_trades_count),
+                "sell_trades_count": int(self.active.sell_trades_count),
+                "large_buy_notional": float(self.active.large_buy_notional),
+                "large_sell_notional": float(self.active.large_sell_notional),
+                "large_trades_count": int(self.active.large_trades_count),
+                "price_size_sum": float(self.active.price_size_sum),
+                "max_trade_notional": float(self.active.max_trade_notional),
+                "footprints": {
+                    repr(float(bucket)): {str(k): float(v) for k, v in values.items()}
+                    for bucket, values in self.active.footprints.items()
+                },
+            }
+        return {
+            "version": 1,
+            "config": {
+                "range_pct": self.range_pct,
+                "contract_value": self.contract_value,
+                "large_trade_notional_threshold": self.large_trade_notional_threshold,
+                "price_step": self.price_step,
+            },
+            "active": active,
+            "day_seq": {str(k): int(v) for k, v in self.day_seq.items()},
+            "cvd_volume": float(self.cvd_volume),
+            "cvd_notional": float(self.cvd_notional),
+        }
+
+    def restore_state(self, state: dict[str, Any]) -> None:
+        """Restore an exact continuation checkpoint into this builder."""
+
+        if int(state.get("version", 0)) != 1:
+            raise ValueError(f"unsupported RangeBarBuilder checkpoint version: {state.get('version')!r}")
+        config = dict(state.get("config") or {})
+        expected = {
+            "range_pct": self.range_pct,
+            "contract_value": self.contract_value,
+            "large_trade_notional_threshold": self.large_trade_notional_threshold,
+            "price_step": self.price_step,
+        }
+        for key, expected_value in expected.items():
+            actual = config.get(key)
+            if expected_value is None:
+                if actual is not None:
+                    raise ValueError(f"checkpoint config mismatch for {key}: {actual!r} != None")
+            elif actual is None or not math.isclose(float(actual), float(expected_value), rel_tol=0.0, abs_tol=1e-12):
+                raise ValueError(f"checkpoint config mismatch for {key}: {actual!r} != {expected_value!r}")
+
+        self.day_seq = {str(k): int(v) for k, v in dict(state.get("day_seq") or {}).items()}
+        self.cvd_volume = float(state.get("cvd_volume", 0.0))
+        self.cvd_notional = float(state.get("cvd_notional", 0.0))
+        active = state.get("active")
+        if not active:
+            self.active = None
+            return
+        footprints = {
+            float(bucket): {str(k): float(v) for k, v in dict(values).items()}
+            for bucket, values in dict(active.get("footprints") or {}).items()
+        }
+        self.active = _ActiveRangeBar(
+            bar_id=int(active["bar_id"]),
+            start_ts=pd.Timestamp(active["start_ts"]),
+            open=float(active["open"]),
+            high=float(active["high"]),
+            low=float(active["low"]),
+            close=float(active["close"]),
+            volume=float(active.get("volume", 0.0)),
+            notional=float(active.get("notional", 0.0)),
+            trades_count=int(active.get("trades_count", 0)),
+            buy_volume=float(active.get("buy_volume", 0.0)),
+            sell_volume=float(active.get("sell_volume", 0.0)),
+            buy_notional=float(active.get("buy_notional", 0.0)),
+            sell_notional=float(active.get("sell_notional", 0.0)),
+            buy_trades_count=int(active.get("buy_trades_count", 0)),
+            sell_trades_count=int(active.get("sell_trades_count", 0)),
+            large_buy_notional=float(active.get("large_buy_notional", 0.0)),
+            large_sell_notional=float(active.get("large_sell_notional", 0.0)),
+            large_trades_count=int(active.get("large_trades_count", 0)),
+            price_size_sum=float(active.get("price_size_sum", 0.0)),
+            max_trade_notional=float(active.get("max_trade_notional", 0.0)),
+            footprints=footprints,
+        )
 
     def process_chunk(self, trades: pd.DataFrame) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         bars: list[dict[str, Any]] = []
@@ -530,6 +641,7 @@ class OKXRangeBarLoader:
         days = [parse_date(d) for d in utc_days]
         if not days:
             return {"bars_written": 0, "chunks_read": 0, "days": 0}
+        self._assert_legacy_build_is_safe(days, force_rebuild=force_rebuild)
         if force_rebuild:
             self._delete_cached_days(days)
         builder = RangeBarBuilder(
@@ -710,10 +822,64 @@ class OKXRangeBarLoader:
             return
         with self._get_db_connection() as conn:
             for day in days:
-                prefix = int(day.strftime("%Y%m%d")) * BAR_ID_MULT
-                conn.execute(f"DELETE FROM {self.table_name} WHERE bar_id >= ? AND bar_id < ?", (prefix, prefix + BAR_ID_MULT))
+                start_ts, end_ts = self._utc_day_db_bounds(day)
+                conn.execute(
+                    f"DELETE FROM {self.table_name} WHERE end_ts >= ? AND end_ts < ?",
+                    (timestamp_to_db_text(start_ts), timestamp_to_db_text(end_ts)),
+                )
                 conn.execute(f"DELETE FROM {self.coverage_table_name} WHERE cache_key = ? AND utc_day = ?", (self._cache_key(), day.isoformat()))
             conn.commit()
+
+    def _utc_day_db_bounds(self, utc_day: date) -> tuple[pd.Timestamp, pd.Timestamp]:
+        start = pd.Timestamp(utc_day)
+        if self.timezone_offset_hours:
+            start += pd.Timedelta(hours=self.timezone_offset_hours)
+        return start, start + pd.Timedelta(days=1)
+
+    def _earliest_coverage_day(self) -> date | None:
+        with self._get_db_connection() as conn:
+            row = conn.execute(
+                f"SELECT MIN(utc_day) FROM {self.coverage_table_name} WHERE cache_key = ?",
+                (self._cache_key(),),
+            ).fetchone()
+        return None if not row or not row[0] else date.fromisoformat(str(row[0]))
+
+    def _latest_coverage_day(self) -> date | None:
+        with self._get_db_connection() as conn:
+            row = conn.execute(
+                f"SELECT MAX(utc_day) FROM {self.coverage_table_name} WHERE cache_key = ?",
+                (self._cache_key(),),
+            ).fetchone()
+        return None if not row or not row[0] else date.fromisoformat(str(row[0]))
+
+    def _assert_legacy_build_is_safe(self, days: Sequence[date], *, force_rebuild: bool) -> None:
+        """Prevent path-dependent incremental builds without exact state.
+
+        The loader-level builder has no persistent active-bar checkpoint.  It is
+        safe only for a brand-new cache or a full-cache rebuild.  Incremental
+        updates must go through tools/prebuild_okx_range_all.py.
+        """
+
+        ordered_days = sorted(set(days))
+        if len(ordered_days) != (ordered_days[-1] - ordered_days[0]).days + 1:
+            raise RuntimeError("Unsafe non-contiguous range-bar build blocked; UTC days must be contiguous.")
+        first = self._earliest_coverage_day()
+        if first is None:
+            return
+        last = self._latest_coverage_day()
+        assert last is not None
+        requested_first = ordered_days[0]
+        requested_last = ordered_days[-1]
+        if force_rebuild and requested_first <= first and requested_last >= last:
+            return
+        missing = [day for day in ordered_days if not self._has_coverage(day)]
+        if not missing and not force_rebuild:
+            return
+        raise RuntimeError(
+            "Unsafe incremental range-bar build blocked: range bars are path dependent and this loader "
+            "cannot restore the cross-day active bar/CVD state. Run "
+            "python tools/prebuild_okx_range_all.py with the requested date range instead."
+        )
 
     def _has_coverage(self, utc_day: date) -> bool:
         with self._get_db_connection() as conn:
@@ -724,7 +890,7 @@ class OKXRangeBarLoader:
         return row is not None
 
     def _mark_coverage(self, utc_day: date, *, rows: int) -> None:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         params = {
             "symbol": self.symbol,
             "range_pct": self.range_pct,

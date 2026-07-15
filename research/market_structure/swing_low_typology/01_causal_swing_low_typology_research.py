@@ -50,7 +50,7 @@ from research.market_structure.swing_low_typology.common.swing_low_dataset impor
 )
 
 SCRIPT_NAME = "01_causal_swing_low_typology_research"
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 EXPERIMENT_ID = "ETH_1M_SWING_LOW_CAUSAL_TYPOLOGY_01"
 EDGE_ID = "RESEARCH_ONLY_ETH_SWING_LOW_TYPOLOGY"
 TITLE = "ETH Swing Low Causal Typology Research 01"
@@ -195,8 +195,8 @@ def _build_summary(
         "## Scope",
         "",
         "- Pure descriptive research; no entries, exits, PnL, or strategy backtest.",
-        f"- Swing-low label: at least {args.target_move_pct:g}% rebound completed within {args.max_completion_bars} bars.",
-        "- Future prices are used only for the historical label and confirmation timestamp.",
+        f"- Swing-low label: structural low at the extreme bar low; enter next-bar open; a future closed-bar close reaches +{args.target_move_pct:g}% within {args.max_completion_bars} bars.",
+        "- Future closed-bar closes are used only for the historical label and confirmation timestamp; future highs/lows do not determine return.",
         "- Every clustering feature uses the extreme bar close or older trade bars only; left-labelled bars become available after close.",
         "- Preprocessing, PCA, K selection, centroids, and rule cards are fit on the development period only.",
         "",
@@ -389,6 +389,10 @@ def run_research(args: argparse.Namespace) -> Path:
         "train_end_date": args.train_end_date,
         "target_move_pct": float(args.target_move_pct),
         "max_completion_bars": int(args.max_completion_bars),
+        "swing_extreme_price_source": "low",
+        "swing_entry_price_source": "next_bar_open",
+        "swing_target_observation_source": "future_closed_bar_close",
+        "swing_return_definition": "future_closed_bar_close / next_bar_open - 1",
         "feature_windows": list(windows),
         "event_count": int(len(events)),
         "train_count": int(train_mask.sum()),
@@ -396,7 +400,7 @@ def run_research(args: argparse.Namespace) -> Path:
         "selected_k": int(frozen.selected_k),
         "selected_features": list(frozen.feature_columns),
         "pca_components": int(frozen.pca.n_components_),
-        "causal_policy": "features use extreme bar or older; future only labels the swing-low universe",
+        "causal_policy": "extreme uses current bar low; tradable confirmation uses next-bar open to future closed-bar close; features use extreme bar or older",
     }
     (out_dir / "00_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"

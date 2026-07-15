@@ -48,6 +48,11 @@ class FrozenScoreModel:
     calibration_values: Mapping[str, np.ndarray]
     ambiguity_margin_threshold: float
     labels: tuple[str, ...]
+    train_row_count: int
+    minimum_train_rows: int
+    preferred_train_rows: int
+    small_sample_mode: bool
+    ambiguity_quantile: float
 
     def transform(self, features: pd.DataFrame) -> pd.DataFrame:
         numeric = features.reindex(columns=self.feature_columns).apply(pd.to_numeric, errors="coerce")
@@ -286,6 +291,25 @@ def _softmax(scores: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(exp / den, index=scores.index, columns=scores.columns)
 
 
+def _adaptive_minimum_train_rows(
+    terms: Mapping[str, Sequence[ScoreTerm]],
+    *,
+    calibrate_percentiles: bool,
+) -> int:
+    """Return a conservative floor appropriate for this score model.
+
+    These mechanism models are not supervised classifiers: train rows fit
+    univariate robust normalizers and, optionally, empirical score
+    percentiles.  Requiring a fixed 100 rows therefore rejects valid smaller
+    source universes after the Swing Low label policy changes.  We still keep
+    an absolute floor and a per-archetype allowance so tiny samples fail
+    loudly instead of producing unstable narratives.
+    """
+
+    per_label = 10 if calibrate_percentiles else 8
+    return max(30, int(len(terms)) * per_label)
+
+
 def fit_score_model(
     features: pd.DataFrame,
     train_mask: pd.Series,
@@ -294,11 +318,36 @@ def fit_score_model(
     name: str,
     calibrate_percentiles: bool,
     ambiguity_quantile: float = 0.20,
+    minimum_train_rows: int | None = None,
 ) -> FrozenScoreModel:
-    """Fit robust normalization and score calibration on train rows only."""
+    """Fit robust normalization and score calibration on train rows only.
 
-    if int(train_mask.sum()) < 100:
-        raise RuntimeError(f"{name} needs at least 100 train rows, got {int(train_mask.sum())}")
+    When the source universe is smaller than the preferred reliability target
+    but still above the adaptive safety floor, the model enters small-sample
+    mode.  Classification remains frozen and causal, while a larger share of
+    low-margin rows is explicitly marked ambiguous.
+    """
+
+    train_count = int(train_mask.sum())
+    required_rows = (
+        int(minimum_train_rows)
+        if minimum_train_rows is not None
+        else _adaptive_minimum_train_rows(terms, calibrate_percentiles=calibrate_percentiles)
+    )
+    if required_rows < 2:
+        raise ValueError("minimum_train_rows must be >= 2")
+    if train_count < required_rows:
+        raise RuntimeError(
+            f"{name} needs at least {required_rows} train rows for {len(terms)} archetypes, "
+            f"got {train_count}"
+        )
+
+    preferred_rows = max(100, int(len(terms)) * 20)
+    small_sample_mode = train_count < preferred_rows
+    effective_ambiguity_quantile = float(ambiguity_quantile)
+    if small_sample_mode:
+        effective_ambiguity_quantile = max(effective_ambiguity_quantile, 0.35)
+
     feature_columns = tuple(dict.fromkeys(term.feature for label_terms in terms.values() for term in label_terms))
     missing = [column for column in feature_columns if column not in features.columns]
     if missing:
@@ -313,7 +362,7 @@ def fit_score_model(
     values = calibrated.loc[train_mask].to_numpy(dtype=float)
     ordered = np.sort(values, axis=1)
     margins = ordered[:, -1] - ordered[:, -2] if values.shape[1] > 1 else np.ones(len(values))
-    threshold = float(np.nanquantile(margins, float(ambiguity_quantile)))
+    threshold = float(np.nanquantile(margins, effective_ambiguity_quantile))
     return FrozenScoreModel(
         name=name,
         terms={key: tuple(value) for key, value in terms.items()},
@@ -326,6 +375,11 @@ def fit_score_model(
         calibration_values=calibration,
         ambiguity_margin_threshold=threshold,
         labels=tuple(terms.keys()),
+        train_row_count=train_count,
+        minimum_train_rows=required_rows,
+        preferred_train_rows=preferred_rows,
+        small_sample_mode=small_sample_mode,
+        ambiguity_quantile=effective_ambiguity_quantile,
     )
 
 

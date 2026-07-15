@@ -28,13 +28,17 @@ EPS = 1e-12
 @dataclass(frozen=True)
 class ConfirmedSwingLow:
     extreme_pos: int
+    entry_pos: int
     confirmation_pos: int
     extreme_price: float
+    entry_price: float
     confirmation_price: float
     realized_move: float
 
     @property
     def completion_bars(self) -> int:
+        """Number of future closed bars observed after the extreme bar."""
+
         return int(self.confirmation_pos - self.extreme_pos)
 
 
@@ -68,18 +72,61 @@ def _finite_std(values: np.ndarray) -> float:
     return float(np.std(arr, ddof=1))
 
 
-def iter_confirmed_swing_lows(high: np.ndarray, low: np.ndarray, threshold: float) -> Iterable[ConfirmedSwingLow]:
-    """Yield percentage-confirmed swing lows using the Analyze Tool definition.
+def iter_confirmed_swing_lows(
+    high: np.ndarray,
+    low: np.ndarray,
+    open_: np.ndarray,
+    close: np.ndarray,
+    threshold: float,
+) -> Iterable[ConfirmedSwingLow]:
+    """Yield tradably confirmed swing lows.
 
-    The process alternates directional-change pivots. A newly updated extreme
-    cannot be confirmed on the same OHLC bar because intrabar high/low ordering
-    is unknown. The marker is retrospective: confirmation happens after the
-    extreme and the marker is drawn back at the extreme position.
+    The structural extreme remains the historical bar ``low``.  Whether that
+    low delivered the requested rebound is evaluated as a hypothetical causal
+    trade: enter at the following bar ``open`` and require a later *closed-bar*
+    ``close`` to reach the target.  Future intrabar highs and lows never decide
+    target completion, MFE, or MAE.
+
+    High/low are still allowed for the directional-change pivot structure.  A
+    newly updated low cannot confirm on the same bar because its next-bar entry
+    price does not exist yet.
     """
 
-    n = len(high)
+    high = np.asarray(high, dtype=float)
+    low = np.asarray(low, dtype=float)
+    open_ = np.asarray(open_, dtype=float)
+    close = np.asarray(close, dtype=float)
+    n = min(len(high), len(low), len(open_), len(close))
     if n < 2:
         return
+
+    def low_ready(candidate_pos: int, observation_pos: int) -> bool:
+        entry_pos = candidate_pos + 1
+        if entry_pos >= n or observation_pos < entry_pos:
+            return False
+        entry = float(open_[entry_pos])
+        observed_close = float(close[observation_pos])
+        return bool(
+            np.isfinite(entry)
+            and entry > 0
+            and np.isfinite(observed_close)
+            and observed_close >= entry * (1.0 + threshold)
+        )
+
+    def make_event(candidate_pos: int, confirmation_pos: int) -> ConfirmedSwingLow:
+        entry_pos = candidate_pos + 1
+        extreme = float(low[candidate_pos])
+        entry = float(open_[entry_pos])
+        confirmation = float(close[confirmation_pos])
+        return ConfirmedSwingLow(
+            extreme_pos=candidate_pos,
+            entry_pos=entry_pos,
+            confirmation_pos=confirmation_pos,
+            extreme_price=extreme,
+            entry_price=entry,
+            confirmation_price=confirmation,
+            realized_move=confirmation / entry - 1.0,
+        )
 
     candidate_high = 0
     candidate_low = 0
@@ -88,36 +135,35 @@ def iter_confirmed_swing_lows(high: np.ndarray, low: np.ndarray, threshold: floa
     for i in range(1, n):
         hi = float(high[i])
         lo = float(low[i])
-        if not np.isfinite(hi) or not np.isfinite(lo) or hi <= 0 or lo <= 0:
+        observed_close = float(close[i])
+        if (
+            not np.isfinite(hi)
+            or not np.isfinite(lo)
+            or not np.isfinite(observed_close)
+            or hi <= 0
+            or lo <= 0
+        ):
             continue
 
         if mode is None:
-            if hi > high[candidate_high]:
+            if hi > float(high[candidate_high]):
                 candidate_high = i
-            if lo < low[candidate_low]:
+            if lo < float(low[candidate_low]):
                 candidate_low = i
 
-            low_ready = i > candidate_low and hi >= low[candidate_low] * (1.0 + threshold)
-            high_ready = i > candidate_high and lo <= high[candidate_high] * (1.0 - threshold)
+            rebound_ready = low_ready(candidate_low, i)
+            high_ready = i > candidate_high and lo <= float(high[candidate_high]) * (1.0 - threshold)
 
-            if low_ready and high_ready:
+            if rebound_ready and high_ready:
                 if candidate_low < candidate_high:
                     high_ready = False
                 elif candidate_high < candidate_low:
-                    low_ready = False
+                    rebound_ready = False
                 else:
                     continue
 
-            if low_ready:
-                extreme = float(low[candidate_low])
-                confirmation = hi
-                yield ConfirmedSwingLow(
-                    extreme_pos=candidate_low,
-                    confirmation_pos=i,
-                    extreme_price=extreme,
-                    confirmation_price=confirmation,
-                    realized_move=confirmation / extreme - 1.0,
-                )
+            if rebound_ready:
+                yield make_event(candidate_low, i)
                 mode = "high"
                 candidate_high = i
                 continue
@@ -129,28 +175,20 @@ def iter_confirmed_swing_lows(high: np.ndarray, low: np.ndarray, threshold: floa
 
         elif mode == "high":
             updated = False
-            if hi > high[candidate_high]:
+            if hi > float(high[candidate_high]):
                 candidate_high = i
                 updated = True
-            if not updated and i > candidate_high and lo <= high[candidate_high] * (1.0 - threshold):
+            if not updated and i > candidate_high and lo <= float(high[candidate_high]) * (1.0 - threshold):
                 mode = "low"
                 candidate_low = i
 
         else:  # mode == "low"
             updated = False
-            if lo < low[candidate_low]:
+            if lo < float(low[candidate_low]):
                 candidate_low = i
                 updated = True
-            if not updated and i > candidate_low and hi >= low[candidate_low] * (1.0 + threshold):
-                extreme = float(low[candidate_low])
-                confirmation = hi
-                yield ConfirmedSwingLow(
-                    extreme_pos=candidate_low,
-                    confirmation_pos=i,
-                    extreme_price=extreme,
-                    confirmation_price=confirmation,
-                    realized_move=confirmation / extreme - 1.0,
-                )
+            if not updated and low_ready(candidate_low, i):
+                yield make_event(candidate_low, i)
                 mode = "high"
                 candidate_high = i
 
@@ -164,7 +202,12 @@ def detect_swing_lows(
     research_end_exclusive: pd.Timestamp,
     minimum_history_bars: int,
 ) -> pd.DataFrame:
-    """Detect the same retrospective swing lows shown by the Analyze Tool."""
+    """Detect low-anchored swing lows with tradable close confirmation.
+
+    Structural low: current bar ``low``.
+    Entry reference: following bar ``open``.
+    Target observation: subsequent closed-bar ``close`` values only.
+    """
 
     threshold = float(target_move_pct) / 100.0
     if not 0 < threshold < 1:
@@ -174,13 +217,15 @@ def detect_swing_lows(
 
     high = pd.to_numeric(bars["high"], errors="coerce").to_numpy(dtype=float, copy=True)
     low = pd.to_numeric(bars["low"], errors="coerce").to_numpy(dtype=float, copy=True)
+    open_ = pd.to_numeric(bars["open"], errors="coerce").to_numpy(dtype=float, copy=True)
+    close = pd.to_numeric(bars["close"], errors="coerce").to_numpy(dtype=float, copy=True)
     timestamps = pd.DatetimeIndex(bars.index)
     diffs = timestamps.to_series().diff().dropna()
     positive_diffs = diffs[diffs > pd.Timedelta(0)]
     bar_delta = positive_diffs.median() if not positive_diffs.empty else pd.Timedelta(minutes=1)
 
     rows: list[dict[str, object]] = []
-    for swing in iter_confirmed_swing_lows(high, low, threshold):
+    for swing in iter_confirmed_swing_lows(high, low, open_, close, threshold):
         if swing.completion_bars > max_completion_bars:
             continue
         if swing.extreme_pos < minimum_history_bars:
@@ -188,22 +233,29 @@ def detect_swing_lows(
         extreme_time = timestamps[swing.extreme_pos]
         if not (research_start <= extreme_time < research_end_exclusive):
             continue
+        entry_time = timestamps[swing.entry_pos]
         confirmation_time = timestamps[swing.confirmation_pos]
         rows.append(
             {
                 "event_id": f"SL_{extreme_time.strftime('%Y%m%d_%H%M%S')}_{swing.extreme_pos}",
                 "extreme_pos": int(swing.extreme_pos),
+                "entry_pos": int(swing.entry_pos),
                 "confirmation_pos": int(swing.confirmation_pos),
                 "extreme_time": extreme_time,
                 "feature_available_time": extreme_time + bar_delta,
+                "entry_time": entry_time,
                 "confirmation_time": confirmation_time,
                 "confirmation_available_time": confirmation_time + bar_delta,
                 "extreme_price": float(swing.extreme_price),
+                "entry_price": float(swing.entry_price),
                 "confirmation_price": float(swing.confirmation_price),
                 "completion_bars": int(swing.completion_bars),
                 "target_move_pct": float(target_move_pct),
                 "realized_confirmation_move_pct": float(swing.realized_move * 100.0),
                 "retrospective_label": True,
+                "swing_extreme_price_source": "low",
+                "swing_entry_price_source": "next_bar_open",
+                "swing_target_observation_source": "future_closed_bar_close",
             }
         )
 

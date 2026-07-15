@@ -11,10 +11,16 @@ copied for each event.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
 from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
 try:
     from src.research_common.progress import ProgressReporter
@@ -56,6 +62,77 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "large_sell_notional",
     "large_delta_notional",
 )
+
+
+def _is_ascii_path(path: Path) -> bool:
+    return str(path).isascii()
+
+
+def _windows_short_path(path: Path) -> Path | None:
+    """Return an ASCII Windows 8.3 path when available."""
+
+    if os.name != "nt":
+        return None
+    try:  # pragma: no cover - exercised on Windows installations
+        import ctypes
+
+        buffer_size = 32768
+        buffer = ctypes.create_unicode_buffer(buffer_size)
+        result = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, buffer_size)
+        if result and result < buffer_size:
+            candidate = Path(buffer.value)
+            if _is_ascii_path(candidate):
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_ascii_joblib_temp_root() -> Path | None:
+    """Find a writable ASCII-only directory for joblib process memmaps.
+
+    Python 3.13's Windows multiprocessing resource tracker registers folder
+    names through an ASCII control message.  The default user temp directory
+    therefore crashes when the Windows account/path contains Chinese or other
+    non-ASCII characters.  Keeping joblib's memmap root ASCII avoids that
+    environment-only failure without changing any feature calculation.
+    """
+
+    raw_candidates: list[Path] = []
+    explicit = os.environ.get("COINBACKTEST_JOBLIB_TEMP_ROOT")
+    if explicit:
+        raw_candidates.append(Path(explicit).expanduser())
+    raw_candidates.extend(
+        [
+            Path(sys.prefix) / ".coinbacktest_joblib",
+            Path.cwd() / ".coinbacktest_joblib",
+            Path(tempfile.gettempdir()) / "coinbacktest_joblib",
+        ]
+    )
+    if os.name != "nt":
+        raw_candidates.append(Path("/tmp/coinbacktest_joblib"))
+
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        candidates = [raw]
+        if not _is_ascii_path(raw):
+            short_parent = _windows_short_path(raw.parent)
+            if short_parent is not None:
+                candidates.append(short_parent / raw.name)
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen or not _is_ascii_path(candidate):
+                continue
+            seen.add(key)
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                probe = candidate / "write_probe.tmp"
+                probe.write_bytes(b"ok")
+                probe.unlink(missing_ok=True)
+                return candidate
+            except OSError:
+                continue
+    return None
 
 
 @dataclass(frozen=True)
@@ -549,6 +626,62 @@ def extract_event_mechanism_features(
     return row, tests
 
 
+def _extract_mechanism_batch(
+    records: list[dict[str, object]],
+    timestamps: pd.DatetimeIndex,
+    arrays: dict[str, np.ndarray],
+    *,
+    lookback: int,
+    phase_bins: int,
+    support_tolerance_bp: float,
+    min_test_gap: int,
+    rebound_horizon: int,
+    minimum_separation_rebound_bp: float,
+    include_test_details: bool,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Pickle-safe worker batch used by the exact parallel 04 path."""
+
+    rows: list[dict[str, object]] = []
+    test_rows: list[dict[str, object]] = []
+    for record in records:
+        event = SimpleNamespace(**record)
+        row, tests = extract_event_mechanism_features(
+            timestamps=timestamps,
+            arrays=arrays,
+            event=event,
+            lookback=lookback,
+            phase_bins=phase_bins,
+            support_tolerance_bp=support_tolerance_bp,
+            min_test_gap=min_test_gap,
+            rebound_horizon=rebound_horizon,
+            minimum_separation_rebound_bp=minimum_separation_rebound_bp,
+        )
+        rows.append(row)
+        if include_test_details:
+            for test in tests:
+                test_rows.append(
+                    {
+                        "event_id": row["event_id"],
+                        "extreme_time": row["extreme_time"],
+                        "split": row["split"],
+                        "source_subcluster_id": row["source_subcluster_id"],
+                        "test_order": test.order,
+                        "test_time": test.timestamp,
+                        "bars_to_extreme": int((lookback - 1) - test.local_pos),
+                        "low_price": test.low_price,
+                        "low_distance_bp": test.low_distance_bp,
+                        "interval_bars": test.interval_bars,
+                        "drawdown_depth_bp": test.drawdown_depth_bp,
+                        "rebound_bp": test.rebound_bp,
+                        "negative_delta_ratio": test.negative_delta_ratio,
+                        "sell_price_impact": test.sell_price_impact,
+                        "notional_intensity": test.notional_intensity,
+                        "large_sell_ratio": test.large_sell_ratio,
+                    }
+                )
+    return rows, test_rows
+
+
 def build_mechanism_features(
     bars: pd.DataFrame,
     stage2_assignments: pd.DataFrame,
@@ -560,6 +693,10 @@ def build_mechanism_features(
     rebound_horizon: int = 30,
     minimum_separation_rebound_bp: float = 15.0,
     progress_every: int = 250,
+    include_test_details: bool = True,
+    progress_enabled: bool = True,
+    n_jobs: int = 1,
+    parallel_batch_size: int = 1_000,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build causal event features and detailed historical support-test paths."""
 
@@ -574,48 +711,112 @@ def build_mechanism_features(
     events = events[events["extreme_pos"] >= lookback - 1].sort_values("extreme_time").reset_index(drop=True)
     reporter = (
         ProgressReporter("[features] mechanism paths", total=len(events), every=max(1, int(progress_every)))
-        if ProgressReporter is not None
+        if ProgressReporter is not None and progress_enabled
         else None
     )
 
     rows: list[dict[str, object]] = []
     test_rows: list[dict[str, object]] = []
-    for idx, event in enumerate(events.itertuples(index=False)):
-        row, tests = extract_event_mechanism_features(
-            timestamps=timestamps,
-            arrays=arrays,
-            event=event,
-            lookback=lookback,
-            phase_bins=phase_bins,
-            support_tolerance_bp=support_tolerance_bp,
-            min_test_gap=min_test_gap,
-            rebound_horizon=rebound_horizon,
-            minimum_separation_rebound_bp=minimum_separation_rebound_bp,
-        )
-        rows.append(row)
-        for test in tests:
-            test_rows.append(
-                {
-                    "event_id": row["event_id"],
-                    "extreme_time": row["extreme_time"],
-                    "split": row["split"],
-                    "source_subcluster_id": row["source_subcluster_id"],
-                    "test_order": test.order,
-                    "test_time": test.timestamp,
-                    "bars_to_extreme": int((lookback - 1) - test.local_pos),
-                    "low_price": test.low_price,
-                    "low_distance_bp": test.low_distance_bp,
-                    "interval_bars": test.interval_bars,
-                    "drawdown_depth_bp": test.drawdown_depth_bp,
-                    "rebound_bp": test.rebound_bp,
-                    "negative_delta_ratio": test.negative_delta_ratio,
-                    "sell_price_impact": test.sell_price_impact,
-                    "notional_intensity": test.notional_intensity,
-                    "large_sell_ratio": test.large_sell_ratio,
-                }
+    workers = max(1, int(n_jobs))
+    batch_size = max(100, int(parallel_batch_size))
+    if workers == 1 or len(events) < batch_size * 2:
+        for idx, event in enumerate(events.itertuples(index=False)):
+            row, tests = extract_event_mechanism_features(
+                timestamps=timestamps,
+                arrays=arrays,
+                event=event,
+                lookback=lookback,
+                phase_bins=phase_bins,
+                support_tolerance_bp=support_tolerance_bp,
+                min_test_gap=min_test_gap,
+                rebound_horizon=rebound_horizon,
+                minimum_separation_rebound_bp=minimum_separation_rebound_bp,
             )
-        if reporter is not None and idx + 1 < len(events):
-            reporter.update(idx + 1)
+            rows.append(row)
+            if include_test_details:
+                for test in tests:
+                    test_rows.append(
+                        {
+                            "event_id": row["event_id"],
+                            "extreme_time": row["extreme_time"],
+                            "split": row["split"],
+                            "source_subcluster_id": row["source_subcluster_id"],
+                            "test_order": test.order,
+                            "test_time": test.timestamp,
+                            "bars_to_extreme": int((lookback - 1) - test.local_pos),
+                            "low_price": test.low_price,
+                            "low_distance_bp": test.low_distance_bp,
+                            "interval_bars": test.interval_bars,
+                            "drawdown_depth_bp": test.drawdown_depth_bp,
+                            "rebound_bp": test.rebound_bp,
+                            "negative_delta_ratio": test.negative_delta_ratio,
+                            "sell_price_impact": test.sell_price_impact,
+                            "notional_intensity": test.notional_intensity,
+                            "large_sell_ratio": test.large_sell_ratio,
+                        }
+                    )
+            if reporter is not None and idx + 1 < len(events):
+                reporter.update(idx + 1)
+    else:
+        def tasks():
+            return (
+                delayed(_extract_mechanism_batch)(
+                    records,
+                    timestamps,
+                    arrays,
+                    lookback=lookback,
+                    phase_bins=phase_bins,
+                    support_tolerance_bp=support_tolerance_bp,
+                    min_test_gap=min_test_gap,
+                    rebound_horizon=rebound_horizon,
+                    minimum_separation_rebound_bp=minimum_separation_rebound_bp,
+                    include_test_details=include_test_details,
+                )
+                for records in (
+                    events.iloc[start : start + batch_size].to_dict("records")
+                    for start in range(0, len(events), batch_size)
+                )
+            )
+
+        temp_root = _resolve_ascii_joblib_temp_root()
+        if temp_root is None:
+            results = Parallel(
+                n_jobs=workers,
+                backend="threading",
+                require="sharedmem",
+                pre_dispatch="all",
+                batch_size=1,
+            )(tasks())
+        else:
+            try:
+                # Keep the faster process backend, but force every memmap and
+                # resource-tracker path below an ASCII-only writable root.
+                # This avoids Python 3.13's Windows Unicode temp-path failure.
+                results = Parallel(
+                    n_jobs=workers,
+                    backend="loky",
+                    pre_dispatch=workers,
+                    max_nbytes="8M",
+                    mmap_mode="r",
+                    temp_folder=str(temp_root),
+                )(tasks())
+            except UnicodeEncodeError:
+                # Defensive fallback for Windows installations where a parent
+                # process path still reaches the ASCII-only resource tracker.
+                results = Parallel(
+                    n_jobs=workers,
+                    backend="threading",
+                    require="sharedmem",
+                    pre_dispatch="all",
+                    batch_size=1,
+                )(tasks())
+        completed = 0
+        for batch_rows, batch_tests in results:
+            rows.extend(batch_rows)
+            test_rows.extend(batch_tests)
+            completed += len(batch_rows)
+            if reporter is not None and completed < len(events):
+                reporter.update(completed)
     if reporter is not None:
         reporter.close()
 

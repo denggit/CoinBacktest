@@ -197,6 +197,207 @@ def _numeric_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
     }
 
 
+# Research 04 scores hundreds of thousands of causal candidates.  Rebuilding
+# all 315 research-02 features for every candidate is unnecessary: the frozen
+# mechanism score models consume only this compact subset of sequence fields.
+# The formulas below intentionally match ``build_c3_sequence_features``.
+ONLINE_SEQUENCE_SCORE_FEATURES: tuple[str, ...] = (
+    "current_close_position",
+    "current_lower_wick_share",
+    "close_return_30",
+    "realized_vol_30",
+    "price_trend_r2_30",
+    "activity_acceleration_30",
+    "delta_acceleration_30",
+    "direction_change_rate_60",
+    "max_rebound_before_low_60",
+    "rebound_attempt_count_60",
+    "delta_sign_change_rate_120",
+    "negative_delta_no_down_share_120",
+    "sell_flow_without_new_low_share_120",
+    "near_floor_dwell_share_25bp_120",
+    "delta_acceleration_120",
+    "down_bar_share_240",
+    "path_efficiency_240",
+    "price_trend_r2_240",
+    "cvd_r2_240",
+    "large_cvd_ratio_240",
+    "return_delta_correlation_240",
+    "price_cvd_dislocation_240",
+    "near_floor_dwell_share_25bp_240",
+    "phase_price_10",
+    "phase_price_11",
+)
+
+
+def build_c3_online_score_features(
+    bars: pd.DataFrame,
+    parent_assignments: pd.DataFrame,
+    *,
+    phase_lookback: int = 240,
+    phase_bins: int = 12,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build the compact causal sequence subset required by research 04.
+
+    This is an algorithmic optimization, not a timing shortcut.  Every value
+    is calculated from the current closed bar or older bars with the same
+    formulas as :func:`build_c3_sequence_features`.  The compact builder avoids
+    calculating hundreds of unused research-02 diagnostics for the online
+    candidate universe.
+    """
+
+    if phase_lookback < 240:
+        raise ValueError("phase_lookback must be >= 240")
+    if phase_bins < 11:
+        raise ValueError("phase_bins must be >= 11")
+
+    numeric = _numeric_arrays(bars)
+    open_ = numeric["open"]
+    high = numeric["high"]
+    low = numeric["low"]
+    close = numeric["close"]
+    notional = numeric["notional"]
+    trades = numeric["trades_count"]
+    delta = numeric["delta_notional"]
+    large_buy = numeric["large_buy_notional"]
+    large_sell = numeric["large_sell_notional"]
+    large_delta = numeric["large_delta_notional"]
+    large_gross = large_buy + large_sell
+
+    events = parent_assignments.copy()
+    events["extreme_pos"] = pd.to_numeric(events["extreme_pos"], errors="raise").astype(int)
+    events = events[events["extreme_pos"] >= phase_lookback].sort_values("extreme_time").reset_index(drop=True)
+
+    rows: list[dict[str, object]] = []
+    for event in events.itertuples(index=False):
+        pos = int(event.extreme_pos)
+        bar_range = high[pos] - low[pos]
+        lower_wick = min(open_[pos], close[pos]) - low[pos]
+        row: dict[str, object] = {
+            "event_id": event.event_id,
+            "extreme_time": pd.Timestamp(event.extreme_time),
+            "feature_available_time": pd.Timestamp(event.feature_available_time),
+            "extreme_pos": pos,
+            "extreme_price": float(event.extreme_price),
+            "confirmation_time": pd.Timestamp(event.confirmation_time),
+            "confirmation_available_time": pd.Timestamp(event.confirmation_available_time),
+            "completion_bars": int(event.completion_bars),
+            "realized_confirmation_move_pct": float(event.realized_confirmation_move_pct),
+            "parent_cluster_id": str(event.cluster_id),
+            "parent_distance_to_centroid": float(event.distance_to_train_centroid),
+            "parent_split": str(event.split),
+            "year": int(pd.Timestamp(event.extreme_time).year),
+            "current_lower_wick_share": _safe_ratio(lower_wick, bar_range),
+            "current_close_position": _safe_ratio(close[pos] - low[pos], bar_range),
+        }
+
+        for window in (30, 60, 120, 240):
+            start = pos - window + 1
+            sl = slice(start, pos + 1)
+            c = close[sl]
+            o = open_[sl]
+            h = high[sl]
+            l = low[sl]
+            n = notional[sl]
+            d = delta[sl]
+            ld = large_delta[sl]
+            lg = large_gross[sl]
+            returns = np.divide(c, o, out=np.full_like(c, np.nan), where=np.abs(o) > EPS) - 1.0
+
+            if window == 30:
+                valid_c = c[np.isfinite(c) & (c > 0)]
+                log_c = np.log(valid_c) if valid_c.size else np.array([], dtype=float)
+                log_ret = np.diff(log_c) if log_c.size >= 2 else np.array([], dtype=float)
+                _, price_r2 = _linear_slope_r2(log_c)
+                thirds = np.array_split(np.arange(len(c)), 3)
+                first_idx, _, last_idx = thirds
+                first_delta = _safe_ratio(float(np.nansum(d[first_idx])), float(np.nansum(n[first_idx])))
+                last_delta = _safe_ratio(float(np.nansum(d[last_idx])), float(np.nansum(n[last_idx])))
+                row.update(
+                    {
+                        "close_return_30": _safe_ratio(c[-1], c[0]) - 1.0,
+                        "realized_vol_30": _std(log_ret),
+                        "price_trend_r2_30": price_r2,
+                        "activity_acceleration_30": _safe_ratio(_median(n[last_idx]), _median(n[first_idx])) - 1.0,
+                        "delta_acceleration_30": last_delta - first_delta,
+                    }
+                )
+                continue
+
+            if window == 60:
+                running_min = np.minimum.accumulate(l)
+                rebound = np.divide(h, running_min, out=np.full_like(h, np.nan), where=np.abs(running_min) > EPS) - 1.0
+                rebound_above = rebound >= 0.0015
+                row.update(
+                    {
+                        "direction_change_rate_60": _sign_changes(np.diff(c)),
+                        "max_rebound_before_low_60": float(np.nanmax(rebound)) if np.isfinite(rebound).any() else np.nan,
+                        "rebound_attempt_count_60": float(np.sum(rebound_above & np.r_[True, ~rebound_above[:-1]])),
+                    }
+                )
+                continue
+
+            delta_ratio_bar = np.divide(d, n, out=np.full_like(d, np.nan), where=np.abs(n) > EPS)
+            previous_running_min = np.r_[l[0], np.minimum.accumulate(l[:-1])]
+            no_new_low = l >= previous_running_min * 0.9998
+            prior_l = l[:-1]
+
+            if window == 120:
+                thirds = np.array_split(np.arange(len(c)), 3)
+                first_idx, _, last_idx = thirds
+                first_delta = _safe_ratio(float(np.nansum(d[first_idx])), float(np.nansum(n[first_idx])))
+                last_delta = _safe_ratio(float(np.nansum(d[last_idx])), float(np.nansum(n[last_idx])))
+                row.update(
+                    {
+                        "delta_sign_change_rate_120": _sign_changes(d),
+                        "negative_delta_no_down_share_120": _mean(((delta_ratio_bar < 0) & (returns >= 0)).astype(float)),
+                        "sell_flow_without_new_low_share_120": _mean(((delta_ratio_bar < 0) & no_new_low).astype(float)),
+                        "near_floor_dwell_share_25bp_120": _mean((prior_l <= low[pos] * 1.0025).astype(float)) if len(prior_l) else np.nan,
+                        "delta_acceleration_120": last_delta - first_delta,
+                    }
+                )
+                continue
+
+            valid_c = c[np.isfinite(c) & (c > 0)]
+            log_c = np.log(valid_c) if valid_c.size else np.array([], dtype=float)
+            _, price_r2 = _linear_slope_r2(log_c)
+            cum_delta = np.nancumsum(np.where(np.isfinite(d), d, 0.0))
+            total_notional = float(np.nansum(n))
+            cum_delta_norm = cum_delta / total_notional if total_notional > EPS else np.full_like(cum_delta, np.nan)
+            _, cvd_r2 = _linear_slope_r2(cum_delta_norm)
+            abs_path = float(np.nansum(np.abs(np.diff(c))))
+            valid_pair = np.isfinite(delta_ratio_bar) & np.isfinite(returns)
+            corr = (
+                float(np.corrcoef(delta_ratio_bar[valid_pair], returns[valid_pair])[0, 1])
+                if valid_pair.sum() >= 4
+                else np.nan
+            )
+            row.update(
+                {
+                    "down_bar_share_240": _mean((c < o).astype(float)),
+                    "path_efficiency_240": _safe_ratio(abs(c[-1] - c[0]), abs_path),
+                    "price_trend_r2_240": price_r2,
+                    "cvd_r2_240": cvd_r2,
+                    "large_cvd_ratio_240": _safe_ratio(float(np.nansum(ld)), float(np.nansum(lg))),
+                    "return_delta_correlation_240": corr,
+                    "price_cvd_dislocation_240": (_safe_ratio(c[-1], c[0]) - 1.0) - _safe_ratio(float(np.nansum(d)), total_notional),
+                    "near_floor_dwell_share_25bp_240": _mean((prior_l <= low[pos] * 1.0025).astype(float)) if len(prior_l) else np.nan,
+                }
+            )
+
+        phase_start = pos - phase_lookback + 1
+        pc = close[phase_start : pos + 1]
+        for phase_idx, phase_slice in enumerate(_phase_slices(len(pc), phase_bins), start=1):
+            if phase_idx not in (10, 11):
+                continue
+            row[f"phase_price_{phase_idx:02d}"] = _safe_ratio(_median(pc[phase_slice]), low[pos]) - 1.0
+        rows.append(row)
+
+    features = pd.DataFrame(rows).sort_values("extreme_time").reset_index(drop=True)
+    dictionary = build_feature_dictionary(ONLINE_SEQUENCE_SCORE_FEATURES)
+    return features, dictionary
+
+
 def build_c3_sequence_features(
     bars: pd.DataFrame,
     parent_assignments: pd.DataFrame,
@@ -205,6 +406,7 @@ def build_c3_sequence_features(
     phase_lookback: int = 240,
     phase_bins: int = 12,
     progress_every: int = 250,
+    progress_enabled: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build family-rich features using only data visible by the extreme close."""
 
@@ -240,7 +442,7 @@ def build_c3_sequence_features(
     events = events[events["extreme_pos"] >= phase_lookback].sort_values("extreme_time").reset_index(drop=True)
     reporter = (
         ProgressReporter("[features] C3 sequence", total=len(events), every=max(1, int(progress_every)))
-        if ProgressReporter is not None
+        if ProgressReporter is not None and progress_enabled
         else None
     )
 

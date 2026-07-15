@@ -55,7 +55,7 @@ from research.market_structure.swing_low_typology.common.swing_low_dataset impor
 )
 
 SCRIPT_NAME = "03_mechanism_hierarchical_typology_research"
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.1"
 EXPERIMENT_ID = "ETH_1M_SWING_LOW_MECHANISM_HIERARCHICAL_TYPOLOGY_03"
 EDGE_ID = "RESEARCH_ONLY_ETH_SWING_LOW_MECHANISMS"
 TITLE = "ETH Swing Low Mechanism Hierarchical Typology 03"
@@ -155,9 +155,18 @@ def _validate_stage2(args: argparse.Namespace, report_dir: Path) -> dict[str, ob
         "train_end_date": args.train_end_date,
     }
     mismatches = [f"{key}: stage2={manifest.get(key)}, requested={value}" for key, value in checks.items() if str(manifest.get(key)) != str(value)]
+    label_policy = {
+        "swing_extreme_price_source": "low",
+        "swing_entry_price_source": "next_bar_open",
+        "swing_target_observation_source": "future_closed_bar_close",
+    }
+    for key, expected in label_policy.items():
+        actual = manifest.get(key)
+        if actual != expected:
+            mismatches.append(f"{key}: stage2={actual}, required={expected}")
     if mismatches:
         raise RuntimeError("Stage-2 report is incompatible: " + "; ".join(mismatches))
-    if manifest.get("causal_policy") != "future only labels swing universe; subtype features end at extreme bar close":
+    if manifest.get("causal_policy") != "swing extreme uses low; tradable confirmation uses next-bar open to future closed-bar close; subtype features end at extreme bar close":
         raise RuntimeError("Stage-2 manifest does not contain the expected causal policy")
     return manifest
 
@@ -411,7 +420,7 @@ def _causal_audit(
             },
             {
                 "check": "stage2_causal_policy_inherited",
-                "passed": stage2_manifest.get("causal_policy") == "future only labels swing universe; subtype features end at extreme bar close",
+                "passed": stage2_manifest.get("causal_policy") == "swing extreme uses low; tradable confirmation uses next-bar open to future closed-bar close; subtype features end at extreme bar close",
                 "detail": str(stage2_manifest.get("causal_policy")),
             },
             {
@@ -442,6 +451,7 @@ def _summary(
     broad_stability: pd.DataFrame,
     trend_stability: pd.DataFrame,
     base_stability: pd.DataFrame,
+    model_fit_diagnostics: pd.DataFrame,
     audit: pd.DataFrame,
 ) -> str:
     lines = [
@@ -482,6 +492,14 @@ def _summary(
     lines.extend(["", "## C3-E base subtype train/holdout shares", ""])
     for row in base_summary.itertuples(index=False):
         lines.append(f"- {row.base_subtype} / {row.split}: {int(row.count):,} ({float(row.share_within_split):.1%})")
+    lines.extend(["", "## Model fit diagnostics", ""])
+    for row in model_fit_diagnostics.itertuples(index=False):
+        mode = "SMALL-SAMPLE" if bool(row.small_sample_mode) else "standard"
+        lines.append(
+            f"- {row.model}: train={int(row.train_rows):,}, minimum={int(row.minimum_train_rows):,}, "
+            f"preferred={int(row.preferred_train_rows):,}, mode={mode}, "
+            f"ambiguity quantile={float(row.ambiguity_quantile):.0%}"
+        )
     lines.extend(["", "## Bootstrap/random-seed stability", ""])
     for name, frame in (("broad", broad_stability), ("trend", trend_stability), ("base", base_stability)):
         holdout = frame[frame["split"] == "holdout"]
@@ -553,6 +571,30 @@ def run_research(args: argparse.Namespace) -> Path:
     broad_model, trend_model, base_model, broad_assignments, trend_assignments, base_assignments = _apply_models(
         combined
     )
+    model_fit_diagnostics = pd.DataFrame(
+        [
+            {
+                "model": model.name,
+                "train_rows": model.train_row_count,
+                "archetype_count": len(model.labels),
+                "minimum_train_rows": model.minimum_train_rows,
+                "preferred_train_rows": model.preferred_train_rows,
+                "small_sample_mode": model.small_sample_mode,
+                "ambiguity_quantile": model.ambiguity_quantile,
+                "calibrate_percentiles": model.calibrate_percentiles,
+            }
+            for model in (broad_model, trend_model, base_model)
+        ]
+    )
+    _write_csv(model_fit_diagnostics, out_dir / "05b_model_fit_diagnostics.csv")
+    for row in model_fit_diagnostics.itertuples(index=False):
+        if bool(row.small_sample_mode):
+            print(
+                f"[classify] {row.model} small-sample mode "
+                f"train_rows={int(row.train_rows)} preferred={int(row.preferred_train_rows)} "
+                f"ambiguity_quantile={float(row.ambiguity_quantile):.0%}",
+                flush=True,
+            )
     _write_csv(broad_assignments, out_dir / "06_broad_mechanism_assignments.csv")
     _write_csv(trend_assignments, out_dir / "15_c3c_trend_subtype_assignments.csv")
     _write_csv(base_assignments, out_dir / "24_c3e_base_subtype_assignments.csv")
@@ -742,6 +784,10 @@ def run_research(args: argparse.Namespace) -> Path:
         "train_end_date": args.train_end_date,
         "target_move_pct": float(args.target_move_pct),
         "max_completion_bars": int(args.max_completion_bars),
+        "swing_extreme_price_source": "low",
+        "swing_entry_price_source": "next_bar_open",
+        "swing_target_observation_source": "future_closed_bar_close",
+        "swing_return_definition": "future_closed_bar_close / next_bar_open - 1",
         "stage2_experiment_id": stage2_manifest.get("experiment_id"),
         "stage2_feature_source": feature_source,
         "parent_event_count": int(len(combined)),
@@ -752,10 +798,11 @@ def run_research(args: argparse.Namespace) -> Path:
         "minimum_test_gap": int(args.minimum_test_gap),
         "minimum_test_rebound_bp": float(args.minimum_test_rebound_bp),
         "classification_design": "weakly_supervised_causal_mechanism_scores_not_kmeans",
+        "model_fit_diagnostics": model_fit_diagnostics.to_dict(orient="records"),
         "broad_types": list(BROAD_MECHANISM_TERMS),
         "trend_types": list(TREND_ARCHETYPE_TERMS),
         "base_types": list(BASE_ARCHETYPE_TERMS),
-        "causal_policy": "future labels swing universe only; all type features stop at extreme bar close",
+        "causal_policy": "swing extreme uses low; tradable confirmation uses next-bar open to future closed-bar close; all type features stop at extreme bar close",
     }
     (out_dir / "00_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
@@ -763,7 +810,7 @@ def run_research(args: argparse.Namespace) -> Path:
     (out_dir / "42_RESEARCH_SUMMARY.md").write_text(
         _summary(
             stage2_manifest, combined, broad_summary, trend_summary, base_summary,
-            broad_stability, trend_stability, base_stability, audit,
+            broad_stability, trend_stability, base_stability, model_fit_diagnostics, audit,
         ),
         encoding="utf-8",
     )
