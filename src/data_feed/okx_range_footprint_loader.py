@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -33,7 +33,6 @@ except ImportError:  # pragma: no cover
 try:
     from src.data_feed.okx_tick_loader import DEFAULT_OKX_TRADES_URL_TEMPLATE, OKXTickLoader
     from src.data_feed.okx_range_bar_loader import (
-        BAR_ID_MULT,
         DEFAULT_LARGE_TRADE_NOTIONAL_THRESHOLD,
         DEFAULT_RANGE_PCTS,
         RangeBarBuilder,
@@ -49,7 +48,6 @@ try:
 except ImportError:  # pragma: no cover
     from okx_tick_loader import DEFAULT_OKX_TRADES_URL_TEMPLATE, OKXTickLoader
     from okx_range_bar_loader import (
-        BAR_ID_MULT,
         DEFAULT_LARGE_TRADE_NOTIONAL_THRESHOLD,
         DEFAULT_RANGE_PCTS,
         RangeBarBuilder,
@@ -198,6 +196,7 @@ class OKXRangeFootprintLoader:
         days = [parse_date(d) for d in utc_days]
         if not days:
             return {"footprints_written": 0, "chunks_read": 0, "days": 0}
+        self._assert_legacy_build_is_safe(days, force_rebuild=force_rebuild)
         if force_rebuild:
             self._delete_cached_days(days)
 
@@ -388,10 +387,57 @@ class OKXRangeFootprintLoader:
     def _delete_cached_days(self, days: Sequence[date]) -> None:
         with self._get_db_connection() as conn:
             for day in days:
-                prefix = int(day.strftime("%Y%m%d")) * BAR_ID_MULT
-                conn.execute(f"DELETE FROM {self.table_name} WHERE bar_id >= ? AND bar_id < ?", (prefix, prefix + BAR_ID_MULT))
+                start_ts, end_ts = self._utc_day_db_bounds(day)
+                conn.execute(
+                    f"DELETE FROM {self.table_name} WHERE end_ts >= ? AND end_ts < ?",
+                    (timestamp_to_db_text(start_ts), timestamp_to_db_text(end_ts)),
+                )
                 conn.execute(f"DELETE FROM {self.coverage_table_name} WHERE cache_key = ? AND utc_day = ?", (self._cache_key(), day.isoformat()))
             conn.commit()
+
+    def _utc_day_db_bounds(self, utc_day: date) -> tuple[pd.Timestamp, pd.Timestamp]:
+        start = pd.Timestamp(utc_day)
+        if self.timezone_offset_hours:
+            start += pd.Timedelta(hours=self.timezone_offset_hours)
+        return start, start + pd.Timedelta(days=1)
+
+    def _earliest_coverage_day(self) -> date | None:
+        with self._get_db_connection() as conn:
+            row = conn.execute(
+                f"SELECT MIN(utc_day) FROM {self.coverage_table_name} WHERE cache_key = ?",
+                (self._cache_key(),),
+            ).fetchone()
+        return None if not row or not row[0] else date.fromisoformat(str(row[0]))
+
+    def _latest_coverage_day(self) -> date | None:
+        with self._get_db_connection() as conn:
+            row = conn.execute(
+                f"SELECT MAX(utc_day) FROM {self.coverage_table_name} WHERE cache_key = ?",
+                (self._cache_key(),),
+            ).fetchone()
+        return None if not row or not row[0] else date.fromisoformat(str(row[0]))
+
+    def _assert_legacy_build_is_safe(self, days: Sequence[date], *, force_rebuild: bool) -> None:
+        ordered_days = sorted(set(days))
+        if len(ordered_days) != (ordered_days[-1] - ordered_days[0]).days + 1:
+            raise RuntimeError("Unsafe non-contiguous range-footprint build blocked; UTC days must be contiguous.")
+        first = self._earliest_coverage_day()
+        if first is None:
+            return
+        last = self._latest_coverage_day()
+        assert last is not None
+        requested_first = ordered_days[0]
+        requested_last = ordered_days[-1]
+        if force_rebuild and requested_first <= first and requested_last >= last:
+            return
+        missing = [day for day in ordered_days if not self._has_coverage(day)]
+        if not missing and not force_rebuild:
+            return
+        raise RuntimeError(
+            "Unsafe incremental range-footprint build blocked: range bars are path dependent and this loader "
+            "cannot restore the cross-day active bar/CVD/footprint state. Run "
+            "python tools/prebuild_okx_range_all.py with the requested date range instead."
+        )
 
     def _has_coverage(self, utc_day: date) -> bool:
         with self._get_db_connection() as conn:
@@ -402,7 +448,7 @@ class OKXRangeFootprintLoader:
         return row is not None
 
     def _mark_coverage(self, utc_day: date, *, rows: int, bars: int) -> None:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         params = {
             "symbol": self.symbol,
             "range_pct": self.range_pct,

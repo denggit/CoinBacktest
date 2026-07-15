@@ -1,1 +1,0 @@
-"""Market-structure research experiments."""
