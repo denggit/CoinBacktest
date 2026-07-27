@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CoinBacktest Analyze Tool</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722-liquidity-v24-robust-continuity" />
 </head>
 <body>
   <div class="shell">
@@ -33,7 +33,7 @@
         </label>
         <div class="grid2">
           <label>Start
-            <input id="start" type="datetime-local" value="2026-01-01T00:00" />
+            <input id="start" type="datetime-local" value="2026-06-01T00:00" />
           </label>
           <label>End
             <input id="end" type="datetime-local" value="2026-06-30T23:59" />
@@ -63,9 +63,12 @@
 
       <section class="panel tips">
         <div class="panel-title">操作</div>
-        <p>鼠标滚轮缩放；按住图表左右拖动；移动鼠标查看单根 K 线。</p>
+        <p>图内滚轮缩放时间；普通拖动只左右平移，按住 Shift 再拖动可上下左右平移。</p>
+        <p>右侧价格轴滚轮或拖动会以鼠标落点为锚缩放；Shift+拖动价格轴可上下平移；双击价格轴恢复价格自适应。</p>
+        <p>工具栏支持复位、价格自适应、跳到最早/最新，以及按日期时间跳转。</p>
         <p>点击 K 线可锁定下方详情；点击同一根或空白处取消。拖动时不会误触发锁定。</p>
         <p>Range Bar 使用 close/end_ts 作为横轴时间。</p>
+        <p>市场状态地图 V0.3：默认交易视图只显示方向许可、当前阶段、交易观察；需要完整指标时切换到研究视图。</p>
         <p>多阶段恐慌插件：橙=开始观察，红=加速，紫=低点候选，黄=衰减/拒绝，绿=恢复确认。</p>
       </section>
     </aside>
@@ -80,28 +83,62 @@
           <span class="dot up"></span>涨
           <span class="dot down"></span>跌
           <span class="dot mark"></span>节点
-          <span class="episode-swatch"></span>Episode区间
+          <span class="episode-swatch"></span>事件 / 状态色带
         </div>
       </div>
 
       <section class="chart-card">
+        <div class="chart-toolbar" aria-label="图表导航工具栏">
+          <button id="resetViewBtn" class="chart-tool" title="复位时间与价格视窗">复位</button>
+          <button id="autoPriceBtn" class="chart-tool" title="仅恢复当前可视区价格自适应">价格自适应</button>
+          <button id="goStartBtn" class="chart-tool" title="保持当前缩放并跳到最早数据">最早</button>
+          <button id="goEndBtn" class="chart-tool" title="保持当前缩放并跳到最新数据">最新</button>
+          <div class="chart-jump">
+            <input id="jumpDate" type="datetime-local" aria-label="跳转日期时间" />
+            <button id="jumpDateBtn" class="chart-tool" title="将输入时间移动到视窗中心">跳转</button>
+          </div>
+          <div id="heatmapColorControls" class="heatmap-color-controls hidden" title="挂单量比例色阶：低于下限隐藏，达到上限后保持最深色；不改变数据或墙识别">
+            <span class="heatmap-control-label">色阶</span>
+            <label>隐藏低于 <b id="heatmapColorMinValue">0%</b>
+              <input id="heatmapColorMin" type="range" min="0" max="95" step="1" value="0" />
+            </label>
+            <label>最深达到 <b id="heatmapColorMaxValue">50%</b>
+              <input id="heatmapColorMax" type="range" min="5" max="100" step="1" value="50" />
+            </label>
+            <button id="resetHeatmapColorBtn" class="chart-tool compact" title="恢复默认热力颜色范围">色阶复位</button>
+          </div>
+          <label id="wallOverlayControl" class="wall-overlay-control hidden" title="显示机器识别的长期流动性墙；默认关闭">
+            <input id="wallOverlayToggle" type="checkbox" />
+            <span id="wallOverlayLabel">墙</span>
+          </label>
+          <span id="alignmentAuditBadge" class="alignment-audit-badge hidden">对齐未检查</span>
+          <span class="chart-tool-hint">图内拖动：仅左右 · Shift+图内拖动：上下左右 · 右轴拖动：按落点缩放 · Shift+右轴拖动：上下平移</span>
+        </div>
         <canvas id="chartCanvas"></canvas>
         <div id="tooltip" class="tooltip hidden"></div>
       </section>
 
-      <section class="detail-grid">
+      <section id="detailGrid" class="detail-grid">
         <div class="detail-card">
           <div id="currentKlineTitle" class="detail-title">当前 K 线</div>
           <div id="ohlcvDetail" class="ohlcv-detail empty">鼠标移动到 K 线上查看数据</div>
         </div>
-        <div class="detail-card wide">
-          <div class="detail-title">更多字段</div>
-          <div id="extraDetail" class="extra-detail empty">Trade Bar / Range Bar 的更多字段会显示在这里</div>
+        <div id="marketStateCard" class="detail-card market-state-card hidden">
+          <div class="detail-title">市场状态摘要</div>
+          <div id="marketStateDetail" class="market-state-detail empty">运行市场状态地图后显示</div>
         </div>
+        <div id="heatmapCellCard" class="detail-card heatmap-cell-card hidden">
+          <div class="detail-title">流动性格详情</div>
+          <div id="heatmapCellDetail" class="heatmap-cell-detail empty">鼠标放到热力格上查看价格、时间与挂单数量</div>
+        </div>
+        <details id="advancedDetailPanel" class="detail-card advanced-card">
+          <summary>高级字段（研究用）</summary>
+          <div id="extraDetail" class="extra-detail empty">Trade Bar / Range Bar 的更多字段会显示在这里</div>
+        </details>
       </section>
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260712-swing-arrows"></script>
+  <script src="/static/app.js?v=20260723-liquidity-v253-json-hotfix"></script>
 </body>
 </html>

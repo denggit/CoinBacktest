@@ -305,6 +305,140 @@ def prebuild_one_day(
     )
 
 
+def prebuild_one_day_multi(
+    loaders: dict[str, OKXTradeBarLoader],
+    day: date,
+    *,
+    chunksize: int,
+    force_rebuild: bool,
+    dry_run: bool,
+    log_every_chunks: int,
+) -> list[DayBuildResult]:
+    """Build every requested timeframe from one raw-trade scan.
+
+    Trade normalization is independent of timeframe.  The old timeframe-first
+    loop reopened and parsed the same daily ZIP once per timeframe; this
+    day-first implementation normalizes each chunk once and fans the resulting
+    trades into all active timeframe aggregators.  SQLite coverage remains the
+    per-timeframe completion marker, so interruption and reruns are still safe.
+    """
+
+    started = time.time()
+    results: list[DayBuildResult] = []
+    active: dict[str, OKXTradeBarLoader] = {}
+    for timeframe, loader in loaders.items():
+        if not force_rebuild and loader._has_coverage(day):
+            results.append(
+                DayBuildResult(
+                    symbol=loader.symbol,
+                    timeframe=timeframe,
+                    utc_day=day.isoformat(),
+                    status="skipped_cached",
+                    rows_written=0,
+                    chunks_read=0,
+                    elapsed_seconds=time.time() - started,
+                )
+            )
+        else:
+            active[timeframe] = loader
+
+    if not active:
+        return results
+
+    base_loader = next(iter(active.values()))
+    if dry_run:
+        raw_file = base_loader.tick_loader.find_local_trade_file(day, template=base_loader.trades_url_template)
+        status = "would_build_local" if raw_file else "would_download_then_build"
+        for timeframe, loader in active.items():
+            results.append(
+                DayBuildResult(
+                    symbol=loader.symbol,
+                    timeframe=timeframe,
+                    utc_day=day.isoformat(),
+                    status=status,
+                    rows_written=0,
+                    chunks_read=0,
+                    elapsed_seconds=time.time() - started,
+                )
+            )
+        return results
+
+    raw_file = base_loader._ensure_raw_trade_file(day)
+    logger.info(
+        "[PREBUILD-MULTI-DAY-START] symbol=%s timeframes=%s utc_day=%s raw=%s chunksize=%s",
+        base_loader.symbol,
+        ",".join(active),
+        day,
+        raw_file,
+        chunksize,
+    )
+    carries: dict[str, pd.DataFrame | None] = {timeframe: None for timeframe in active}
+    rows_written: dict[str, int] = {timeframe: 0 for timeframe in active}
+    chunks_read = 0
+
+    for raw in base_loader._iter_trade_csv_chunks(raw_file, chunksize=chunksize):
+        chunks_read += 1
+        # All loaders share symbol/contract-value/large-trade threshold, so the
+        # normalized trade chunk is valid for every timeframe.
+        chunk = base_loader._normalize_trade_chunk_fast(raw)
+        for timeframe, loader in active.items():
+            partial = loader._aggregate_trade_chunk_partial(chunk) if not chunk.empty else pd.DataFrame()
+            carry = carries[timeframe]
+            merged = merge_partial_bars([carry, partial] if carry is not None else [partial])
+            if merged.empty:
+                carries[timeframe] = None
+                continue
+            if len(merged) > 1:
+                rows_written[timeframe] += finalize_and_write(loader, merged.iloc[:-1])
+                carries[timeframe] = merged.iloc[[-1]]
+            else:
+                carries[timeframe] = merged
+
+        if log_every_chunks > 0 and chunks_read % log_every_chunks == 0:
+            logger.info(
+                "[PREBUILD-MULTI-DAY-PROGRESS] symbol=%s utc_day=%s chunks=%s rows_by_timeframe=%s",
+                base_loader.symbol,
+                day,
+                chunks_read,
+                ",".join(f"{tf}:{rows_written[tf]}" for tf in active),
+            )
+
+    for timeframe, loader in active.items():
+        carry = carries[timeframe]
+        if carry is not None and not carry.empty:
+            rows_written[timeframe] += finalize_and_write(loader, carry)
+
+    # Coverage is deliberately published only after every active timeframe has
+    # consumed the complete raw day. Partial rows remain harmless upserts when
+    # a killed process reruns a day without a coverage marker.
+    for timeframe, loader in active.items():
+        loader._mark_coverage(day, rows=rows_written[timeframe])
+
+    elapsed = time.time() - started
+    for timeframe, loader in active.items():
+        results.append(
+            DayBuildResult(
+                symbol=loader.symbol,
+                timeframe=timeframe,
+                utc_day=day.isoformat(),
+                status="built",
+                rows_written=rows_written[timeframe],
+                chunks_read=chunks_read,
+                elapsed_seconds=elapsed,
+            )
+        )
+    logger.info(
+        "[PREBUILD-MULTI-DAY-DONE] symbol=%s timeframes=%s utc_day=%s chunks=%s rows_by_timeframe=%s elapsed=%.2fs",
+        base_loader.symbol,
+        ",".join(active),
+        day,
+        chunks_read,
+        ",".join(f"{tf}:{rows_written[tf]}" for tf in active),
+        elapsed,
+    )
+    return results
+
+
 def print_summary(results: list[DayBuildResult]) -> None:
     if not results:
         print("No work executed.")
@@ -313,8 +447,17 @@ def print_summary(results: list[DayBuildResult]) -> None:
     total_skipped = sum(1 for r in results if r.status.startswith("skipped"))
     total_failed = sum(1 for r in results if r.status == "failed")
     total_rows = sum(r.rows_written for r in results)
-    total_chunks = sum(r.chunks_read for r in results)
-    total_elapsed = sum(r.elapsed_seconds for r in results)
+
+    # Multi-timeframe builds share one physical raw-file scan per UTC day.
+    # Every per-timeframe result carries that day's shared chunk/elapsed value,
+    # so summing results would overstate I/O and runtime by N timeframes.
+    day_chunks: dict[str, int] = {}
+    day_elapsed: dict[str, float] = {}
+    for result in results:
+        day_chunks[result.utc_day] = max(day_chunks.get(result.utc_day, 0), result.chunks_read)
+        day_elapsed[result.utc_day] = max(day_elapsed.get(result.utc_day, 0.0), result.elapsed_seconds)
+    total_chunks = sum(day_chunks.values())
+    total_elapsed = sum(day_elapsed.values())
 
     print("=" * 100)
     print("OKX trade bar prebuild summary")
@@ -336,56 +479,57 @@ def main(argv: Sequence[str] | None = None) -> int:
     end = parse_day(args.end_date, "--end-date")
     days = list(date_range(start, end))
 
+    timeframes = list(dict.fromkeys(str(item) for item in args.timeframes))
+    loaders = {timeframe: make_loader(args, timeframe) for timeframe in timeframes}
+    logger.info(
+        "[PREBUILD-START] symbol=%s timeframes=%s days=%s -> %s db=%s chunksize=%s force=%s mode=one_pass_multi_timeframe",
+        args.symbol,
+        ",".join(timeframes),
+        start,
+        end,
+        next(iter(loaders.values())).db_path,
+        args.chunksize,
+        bool(args.force_rebuild),
+    )
     results: list[DayBuildResult] = []
-    for timeframe in args.timeframes:
-        loader = make_loader(args, timeframe)
-        logger.info(
-            "[PREBUILD-START] symbol=%s timeframe=%s days=%s -> %s db=%s table=%s chunksize=%s force=%s",
-            args.symbol,
-            timeframe,
-            start,
-            end,
-            loader.db_path,
-            loader.table_name,
-            args.chunksize,
-            bool(args.force_rebuild),
-        )
-        for day in days:
-            try:
-                result = prebuild_one_day(
-                    loader,
+    for day in days:
+        try:
+            results.extend(
+                prebuild_one_day_multi(
+                    loaders,
                     day,
                     chunksize=int(args.chunksize),
                     force_rebuild=bool(args.force_rebuild),
                     dry_run=bool(args.dry_run),
                     log_every_chunks=int(args.log_every_chunks),
                 )
-                results.append(result)
-            except Exception as exc:
-                logger.exception(
-                    "[PREBUILD-DAY-FAILED] symbol=%s timeframe=%s utc_day=%s error=%s",
-                    args.symbol,
-                    timeframe,
-                    day,
-                    exc,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[PREBUILD-MULTI-DAY-FAILED] symbol=%s timeframes=%s utc_day=%s error=%s",
+                args.symbol,
+                ",".join(timeframes),
+                day,
+                exc,
+            )
+            results.extend(
+                DayBuildResult(
+                    symbol=args.symbol,
+                    timeframe=timeframe,
+                    utc_day=day.isoformat(),
+                    status="failed",
+                    rows_written=0,
+                    chunks_read=0,
+                    elapsed_seconds=0.0,
+                    error=repr(exc),
                 )
-                results.append(
-                    DayBuildResult(
-                        symbol=args.symbol,
-                        timeframe=timeframe,
-                        utc_day=day.isoformat(),
-                        status="failed",
-                        rows_written=0,
-                        chunks_read=0,
-                        elapsed_seconds=0.0,
-                        error=repr(exc),
-                    )
-                )
-                if not args.continue_on_error:
-                    print_summary(results)
-                    return 1
-            if args.sleep_sec > 0:
-                time.sleep(float(args.sleep_sec))
+                for timeframe in timeframes
+            )
+            if not args.continue_on_error:
+                print_summary(results)
+                return 1
+        if args.sleep_sec > 0:
+            time.sleep(float(args.sleep_sec))
 
     print_summary(results)
     return 1 if any(r.status == "failed" for r in results) else 0

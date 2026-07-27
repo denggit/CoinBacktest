@@ -12,6 +12,7 @@ Then open:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import mimetypes
@@ -35,6 +36,7 @@ from analyze_tool.data_service import (  # noqa: E402
     load_dataframe,
     parse_request,
 )
+from analyze_tool.plugin_api import PluginRunContext  # noqa: E402
 from analyze_tool.plugins import build_default_registry  # noqa: E402
 from analyze_tool.plugins.swing_extreme_move import SwingExtremeMovePlugin  # noqa: E402
 
@@ -119,13 +121,24 @@ def _json_safe(value: Any) -> Any:
 
 def json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
     safe_payload = _json_safe(payload)
-    raw = json.dumps(safe_payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    raw = json.dumps(
+        safe_payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    accepts_gzip = "gzip" in str(handler.headers.get("Accept-Encoding", "")).lower()
+    compressed = accepts_gzip and len(raw) >= 64 * 1024
+    body = gzip.compress(raw, compresslevel=3) if compressed else raw
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(raw)))
+    if compressed:
+        handler.send_header("Content-Encoding", "gzip")
+        handler.send_header("Vary", "Accept-Encoding")
+    handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
-    handler.wfile.write(raw)
+    handler.wfile.write(body)
 
 
 def error_response(handler: BaseHTTPRequestHandler, message: str, status: int = 400, *, debug: str | None = None) -> None:
@@ -142,13 +155,18 @@ def parse_query(path: str) -> tuple[str, dict[str, Any]]:
 
 
 class AnalyzeToolHandler(BaseHTTPRequestHandler):
-    server_version = "CoinBacktestAnalyzeTool/0.1"
+    server_version = "CoinBacktestAnalyzeTool/0.1.1"
 
     def do_GET(self) -> None:  # noqa: N802
         path, params = parse_query(self.path)
         try:
             if path in {"/", "/index.html"}:
                 self._serve_static("index.html")
+                return
+            if path == "/favicon.ico":
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
                 return
             if path.startswith("/static/"):
                 self._serve_static(path.removeprefix("/static/"))
@@ -187,7 +205,24 @@ class AnalyzeToolHandler(BaseHTTPRequestHandler):
                 except KeyError as exc:
                     available = ", ".join(registered_plugin_ids()) or "<none>"
                     raise KeyError(f"unknown plugin: {plugin_id}; registered: {available}") from exc
-                result = plugin.run(df, plugin_params)
+                context = PluginRunContext(
+                    display_df=df,
+                    visible_df=df,
+                    analysis_frames={},
+                    request={
+                        "data_type": req.data_type,
+                        "timeframe": req.timeframe,
+                        "range_pct": req.range_pct,
+                        "start": req.start,
+                        "end": req.end,
+                    },
+                    meta=meta,
+                )
+                contextual_run = getattr(plugin, "run_with_context", None)
+                if callable(contextual_run):
+                    result = contextual_run(context, plugin_params)
+                else:
+                    result = plugin.run(df, plugin_params)
                 out = result.as_dict()
                 out["ok"] = True
                 out["meta"] = meta

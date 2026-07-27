@@ -1,31 +1,17 @@
 {
-  "new_files": [
-    "analyze_tool/README.md",
-    "analyze_tool/__init__.py",
-    "analyze_tool/data_service.py",
-    "analyze_tool/plugin_api.py",
-    "analyze_tool/server.py",
-    "analyze_tool/selftest.py",
-    "analyze_tool/plugins/__init__.py",
-    "analyze_tool/plugins/long_shadow.py",
-    "analyze_tool/static/index.html",
-    "analyze_tool/static/styles.css",
-    "analyze_tool/static/app.js"
+  "patch_name": "market_state_map_v0_2_second_batch",
+  "requires": "Market State Map V0 first batch + V0.1 correction",
+  "scope": [
+    "Real trade-bar aggressive buy/sell order-flow state",
+    "Flow persistence and acceleration",
+    "Price-impact effectiveness and absorption proxies",
+    "Prior-bar rolling support/resistance and sweep/acceptance state",
+    "Non-trading long/short context watch labels",
+    "Ten indicator tracks and six independent state bands"
   ],
-  "modified_files": [],
+  "strategy_or_backtest_logic_changed": false,
+  "data_feed_logic_changed": false,
+  "not_trade_signal": true,
   "run_command": "python analyze_tool/server.py --host 127.0.0.1 --port 8765",
-  "notes": "Standalone local analyzer. Uses existing src.data_feed loaders. Default is local-cache-only to avoid accidental heavy downloads. No strategy/backtest logic changed.",
-  "updated_in_this_version": [
-    "Plugin marker rendering reverted to the first slim vertical marker style.",
-    "Removed the plugin marker top badge/dot.",
-    "Kept click-to-lock candle detail panel and drag-threshold behavior.",
-    "Click-locked candle now uses a slim white highlight matching the original marker language."
-  ],
-  "tests_run": [
-    "python analyze_tool/selftest.py",
-    "python -m py_compile analyze_tool/server.py analyze_tool/data_service.py analyze_tool/plugin_api.py analyze_tool/plugins/long_shadow.py analyze_tool/selftest.py",
-    "node --check analyze_tool/static/app.js",
-    "python tools/check_import_boundaries.py",
-    "python -m pytest tests/test_import_boundaries.py -q"
-  ]
+  "focused_test_command": "python -m pytest tests/market_state tests/test_analyze_tool_market_state.py tests/test_analyze_tool_panic_episode.py -q"
 }

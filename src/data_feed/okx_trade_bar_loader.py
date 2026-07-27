@@ -327,6 +327,15 @@ class OKXTradeBarLoader:
         return self.tick_loader.download_official_trade_file(day, self.trades_url_template)
 
     def _iter_trade_csv_chunks(self, path: str | Path, *, chunksize: int) -> Iterator[pd.DataFrame]:
+        wanted = {
+            "ts", "timestamp", "time", "datetime", "created_time", "createdtime",
+            "create_time", "created_at", "createdat", "px", "price", "sz", "size",
+            "qty", "amount", "side",
+        }
+
+        def use_column(name: str) -> bool:
+            return str(name).strip().lower() in wanted
+
         p = Path(path)
         if p.suffix.lower() == ".zip":
             with zipfile.ZipFile(p) as zf:
@@ -335,9 +344,9 @@ class OKXTradeBarLoader:
                     raise RuntimeError(f"empty OKX trade ZIP: {p}")
                 for name in members:
                     with zf.open(name) as f:
-                        yield from pd.read_csv(f, chunksize=chunksize)
+                        yield from pd.read_csv(f, chunksize=chunksize, usecols=use_column)
             return
-        yield from pd.read_csv(p, chunksize=chunksize)
+        yield from pd.read_csv(p, chunksize=chunksize, usecols=use_column)
 
     def _normalize_trade_chunk_fast(self, raw: pd.DataFrame) -> pd.DataFrame:
         rename: dict[str, str] = {}
@@ -641,9 +650,14 @@ class OKXTradeBarLoader:
     # DB internals
     # ------------------------------------------------------------------
     def _get_db_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=60.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-262144")  # about 256 MiB page cache when possible
+        conn.execute("PRAGMA mmap_size=268435456")
+        conn.execute("PRAGMA wal_autocheckpoint=10000")
+        conn.execute("PRAGMA busy_timeout=60000")
         return conn
 
     def _init_db(self) -> None:

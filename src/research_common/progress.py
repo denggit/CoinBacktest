@@ -61,6 +61,7 @@ class ProgressReporter:
     started_at: float = field(default_factory=time.perf_counter)
     last_done: int = 0
     closed: bool = False
+    last_message_length: int = 0
 
     def update(self, done: int, *, force: bool = False) -> None:
         if not self.enabled or self.total <= 0 or self.closed:
@@ -85,7 +86,14 @@ class ProgressReporter:
         )
         is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
         if is_tty:
-            print("\r" + msg, end="\n" if done_i >= self.total else "", file=self.stream, flush=True)
+            padding = " " * max(0, self.last_message_length - len(msg))
+            print(
+                "\r" + msg + padding,
+                end="\n" if done_i >= self.total else "",
+                file=self.stream,
+                flush=True,
+            )
+            self.last_message_length = len(msg)
         else:
             print(msg, file=self.stream, flush=True)
 
@@ -95,7 +103,8 @@ class ProgressReporter:
     def close(self) -> None:
         if self.closed:
             return
-        self.update(self.total, force=True)
+        if self.last_done < self.total:
+            self.update(self.total, force=True)
         self.closed = True
 
     def __enter__(self) -> "ProgressReporter":

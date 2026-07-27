@@ -156,6 +156,15 @@ def normalize_trade_chunk_fast(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def iter_trade_csv_chunks(path: str | Path, *, chunksize: int) -> Iterator[pd.DataFrame]:
+    wanted = {
+        "ts", "timestamp", "time", "datetime", "created_time", "createdtime",
+        "create_time", "created_at", "createdat", "px", "price", "sz", "size",
+        "qty", "amount", "side",
+    }
+
+    def use_column(name: str) -> bool:
+        return str(name).strip().lower() in wanted
+
     p = Path(path)
     if p.suffix.lower() == ".zip":
         with zipfile.ZipFile(p) as zf:
@@ -164,9 +173,9 @@ def iter_trade_csv_chunks(path: str | Path, *, chunksize: int) -> Iterator[pd.Da
                 raise RuntimeError(f"empty OKX trade ZIP: {p}")
             for name in members:
                 with zf.open(name) as f:
-                    yield from pd.read_csv(f, chunksize=chunksize)
+                    yield from pd.read_csv(f, chunksize=chunksize, usecols=use_column)
         return
-    yield from pd.read_csv(p, chunksize=chunksize)
+    yield from pd.read_csv(p, chunksize=chunksize, usecols=use_column)
 
 
 @dataclass
@@ -565,6 +574,7 @@ class OKXRangeBarLoader:
         contract_value: float | None = None,
         large_trade_notional_threshold: float = DEFAULT_LARGE_TRADE_NOTIONAL_THRESHOLD,
         align_with_okx_loader_timezone: bool = True,
+        initialize_db: bool = True,
     ):
         self.symbol = symbol
         self.range_pct = float(range_pct)
@@ -580,7 +590,8 @@ class OKXRangeBarLoader:
         self.tick_loader = OKXTickLoader(symbol=self.symbol, data_dir=self.data_dir, trades_url_template=self.trades_url_template)
         self.table_name = table_name_for_range_bars(self.symbol, self.range_pct)
         self.coverage_table_name = "range_bar_coverage"
-        self._init_db()
+        if initialize_db:
+            self._init_db()
 
     def fetch_data_by_date_range(
         self,
@@ -683,7 +694,20 @@ class OKXRangeBarLoader:
         bars, _ = builder.process_chunk(chunk)
         return self._bars_to_frame(bars)
 
-    def load_local_data(self, start_date: Any | None = None, end_date: Any | None = None) -> pd.DataFrame:
+    def load_local_data(
+        self,
+        start_date: Any | None = None,
+        end_date: Any | None = None,
+        *,
+        connection: sqlite3.Connection | None = None,
+        columns: Sequence[str] | None = None,
+    ) -> pd.DataFrame:
+        selected_columns = list(self.BASE_COLUMNS if columns is None else columns)
+        unknown = sorted(set(selected_columns) - set(self.BASE_COLUMNS))
+        if unknown:
+            raise ValueError(f"unknown range-bar columns: {unknown}")
+        if not selected_columns:
+            raise ValueError("columns must not be empty")
         where = []
         params: list[Any] = []
         if start_date is not None:
@@ -692,19 +716,40 @@ class OKXRangeBarLoader:
         if end_date is not None:
             where.append("start_ts <= ?")
             params.append(timestamp_to_db_text(end_date))
-        sql = f"SELECT {', '.join(self.BASE_COLUMNS)} FROM {self.table_name}"
+        sql = f"SELECT {', '.join(selected_columns)} FROM {self.table_name}"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY end_ts, bar_id"
-        with self._get_db_connection() as conn:
-            try:
-                df = pd.read_sql_query(sql, conn, params=params, parse_dates=["start_ts", "end_ts"])
-            except Exception as exc:
-                logger.warning("读取 range bar DB 失败 table=%s error=%s", self.table_name, exc)
-                return pd.DataFrame(columns=self.BASE_COLUMNS)
+        owns_connection = connection is None
+        conn = self._get_read_db_connection() if owns_connection else connection
+        try:
+            parse_dates = [name for name in ("start_ts", "end_ts") if name in selected_columns]
+            df = pd.read_sql_query(sql, conn, params=params, parse_dates=parse_dates)
+        except Exception as exc:
+            logger.warning("读取 range bar DB 失败 table=%s error=%s", self.table_name, exc)
+            return pd.DataFrame(columns=selected_columns)
+        finally:
+            if owns_connection:
+                conn.close()
         if df.empty:
-            return pd.DataFrame(columns=self.BASE_COLUMNS)
-        return self._finalize_return_df(df)
+            return pd.DataFrame(columns=selected_columns)
+        if columns is None:
+            return self._finalize_return_df(df)
+        out = df.copy()
+        for col in ("start_ts", "end_ts"):
+            if col in out.columns:
+                out[col] = pd.to_datetime(out[col], errors="coerce")
+        for col in set(selected_columns).intersection(self.NUMERIC_COLUMNS):
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        if "bar_id" in out.columns:
+            out["bar_id"] = pd.to_numeric(out["bar_id"], errors="coerce").fillna(0).astype("int64")
+        if "end_ts" in out.columns:
+            out = out.dropna(subset=["end_ts"])
+            sort_columns = [name for name in ("end_ts", "bar_id") if name in out.columns]
+            out = out.sort_values(sort_columns, kind="mergesort")
+            out = out.set_index("end_ts", drop=False)
+            out.index.name = "end_ts"
+        return out[selected_columns]
 
     def delete_cache(self) -> None:
         with self._get_db_connection() as conn:
@@ -751,6 +796,28 @@ class OKXRangeBarLoader:
         out["cvd_volume"] = out["delta_volume"].cumsum()
         out["cvd_notional"] = out["delta_notional"].cumsum()
         return out
+
+    def open_read_connection(self) -> sqlite3.Connection:
+        """Return a query-only shared connection for multi-table research reads.
+
+        The caller owns the returned connection and must close it.
+        """
+        return self._get_read_db_connection()
+
+    def _get_read_db_connection(self) -> sqlite3.Connection:
+        """Open a query-only connection without negotiating WAL mode.
+
+        Repeated research reads must not request a journal-mode transition. On
+        some Windows/network filesystems that transition can wait behind a
+        prior reader even though no write is needed.
+        """
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-262144")
+        conn.execute("PRAGMA mmap_size=268435456")
+        return conn
 
     def _get_db_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

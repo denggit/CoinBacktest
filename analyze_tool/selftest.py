@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from analyze_tool.data_service import dataframe_to_candles  # noqa: E402
+from analyze_tool.plugin_api import PluginRunContext  # noqa: E402
 from analyze_tool.plugins import build_default_registry  # noqa: E402
 from analyze_tool.server import _json_safe  # noqa: E402
 
@@ -55,7 +56,74 @@ def main() -> int:
     assert "delta_volume" in payload["candles"][0]["extra"]
 
     registry = build_default_registry()
-    assert {"long_shadow", "panic_selloff_recovery"}.issubset({p["id"] for p in registry.list_plugins()})
+    assert {"long_shadow", "panic_selloff_recovery", "market_state_map_v0", "estimated_liquidation_heatmap_v1", "offline_orderbook_liquidity_heatmap_v1"}.issubset(
+        {p["id"] for p in registry.list_plugins()}
+    )
+
+    market_state_df = build_panic_sample()
+    market_state = registry.get("market_state_map_v0").run_with_context(
+        PluginRunContext(
+            display_df=market_state_df,
+            visible_df=market_state_df,
+            analysis_frames={},
+            request={"data_type": "normal", "timeframe": "1m", "range_pct": 0.002},
+            meta={},
+        ),
+        {
+            "fast_trend_window": 8,
+            "trend_window": 16,
+            "slow_trend_window": 40,
+            "volatility_window": 16,
+            "activity_window": 8,
+            "baseline_window": 60,
+            "flow_fast_window": 3,
+            "flow_window": 6,
+            "flow_slow_window": 12,
+            "location_window": 16,
+            "structure_window": 40,
+            "trend_confirm_bars": 2,
+            "min_state_bars": 6,
+        },
+    )
+    assert len(market_state.tracks) == 0
+    assert len(market_state.bands) == 3
+    assert [band.band_id for band in market_state.bands] == [
+        "direction_permission", "market_phase", "market_process"
+    ]
+    assert market_state.bands[0].render_mode == "background"
+    assert all(band.render_mode == "strip" for band in market_state.bands[1:])
+    assert len(market_state.row_fields["brief_advice"]["values"]) == 120
+    assert len(market_state.row_fields["brief_process"]["values"]) == 120
+    assert market_state.summary["ui"]["compact"] is True
+    assert market_state.summary["ready_rows"] > 0
+    assert market_state.summary["location_ready_rows"] > 0
+    assert market_state.summary["orderflow_ready_rows"] == 0
+    assert market_state.summary["not_trade_signal"] is True
+
+    research_state = registry.get("market_state_map_v0").run_with_context(
+        PluginRunContext(
+            display_df=market_state_df,
+            visible_df=market_state_df,
+            analysis_frames={},
+            request={"data_type": "normal", "timeframe": "1m", "range_pct": 0.002},
+            meta={},
+        ),
+        {
+            "view_mode": "research",
+            "fast_trend_window": 8,
+            "trend_window": 16,
+            "slow_trend_window": 40,
+            "volatility_window": 16,
+            "activity_window": 8,
+            "baseline_window": 60,
+            "location_window": 16,
+            "structure_window": 40,
+            "trend_confirm_bars": 2,
+            "min_state_bars": 6,
+        },
+    )
+    assert len(research_state.tracks) == 12
+    assert len(research_state.bands) == 6
 
     panic = registry.get("panic_selloff_recovery").run(build_panic_sample(), {})
     assert panic.summary["signal_count"] == 1, panic.summary

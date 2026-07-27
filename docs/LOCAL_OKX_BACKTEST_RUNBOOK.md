@@ -67,6 +67,10 @@ python tools/download_okx_historical_data.py \
   --end-date 2026-05-25
 ```
 
+```bash
+python tools/download_okx_historical_data.py --kind books --symbol ETH-USDT-SWAP --start-date 2021-12-31 --end-date 2026-07-01
+```
+
 For 5000-depth books:
 
 ```bash

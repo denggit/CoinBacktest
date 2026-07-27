@@ -1,0 +1,81 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Column schemas shared by the offline liquidity builder and store."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+
+FEATURE_DTYPES: dict[str, Any] = {
+    "bucket_start_ms": np.int64,
+    "bucket_end_ms": np.int64,
+    "available_time_ms": np.int64,
+    "book_valid": np.uint8,
+    "trade_attribution_valid": np.uint8,
+    "best_bid": np.float64,
+    "best_ask": np.float64,
+    "mid_price": np.float64,
+    "spread_bps": np.float32,
+    "bid_depth_5bps_base": np.float32,
+    "ask_depth_5bps_base": np.float32,
+    "bid_depth_10bps_base": np.float32,
+    "ask_depth_10bps_base": np.float32,
+    "bid_depth_25bps_base": np.float32,
+    "ask_depth_25bps_base": np.float32,
+    "bid_depth_50bps_base": np.float32,
+    "ask_depth_50bps_base": np.float32,
+    "depth_imbalance_25bps": np.float32,
+    "top_bid_wall_price": np.float64,
+    "top_ask_wall_price": np.float64,
+    "top_bid_wall_depth_base": np.float32,
+    "top_ask_wall_depth_base": np.float32,
+    "top_bid_wall_ratio": np.float32,
+    "top_ask_wall_ratio": np.float32,
+    "top_bid_wall_distance_bps": np.float32,
+    "top_ask_wall_distance_bps": np.float32,
+    "nearest_large_bid_price": np.float64,
+    "nearest_large_ask_price": np.float64,
+    "nearest_large_bid_depth_base": np.float32,
+    "nearest_large_ask_depth_base": np.float32,
+    "large_bid_depth_base": np.float32,
+    "large_ask_depth_base": np.float32,
+    "large_bid_bins": np.int16,
+    "large_ask_bins": np.int16,
+    "aggressive_buy_base": np.float32,
+    "aggressive_sell_base": np.float32,
+    "trade_delta_base": np.float32,
+    "book_added_bid_base": np.float32,
+    "book_added_ask_base": np.float32,
+    "book_removed_bid_base": np.float32,
+    "book_removed_ask_base": np.float32,
+    "estimated_bid_cancel_base": np.float32,
+    "estimated_ask_cancel_base": np.float32,
+    "estimated_bid_consumed_base": np.float32,
+    "estimated_ask_consumed_base": np.float32,
+    "estimated_bid_replenished_base": np.float32,
+    "estimated_ask_replenished_base": np.float32,
+}
+
+HEATMAP_DTYPES: dict[str, Any] = {
+    "bucket_start_ms": np.int64,
+    "bucket_end_ms": np.int64,
+    "price_index": np.int32,
+    "side_code": np.int8,
+    "flow_valid": np.uint8,
+    "depth_base": np.float32,
+    "depth_usd": np.float32,
+    "order_count": np.int32,
+    "local_depth_ratio": np.float32,
+    "end_depth_base": np.float32,
+    "end_depth_usd": np.float32,
+    "end_order_count": np.int32,
+    "end_local_depth_ratio": np.float32,
+    "added_base": np.float32,
+    "removed_base": np.float32,
+    "executed_base": np.float32,
+    "cancelled_base": np.float32,
+    "consumed_base": np.float32,
+    "replenished_base": np.float32,
+}

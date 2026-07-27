@@ -85,17 +85,30 @@ class OKXTickLoader:
         raw_file = self.find_local_trade_file(day, template=template)
         return bool(raw_file and raw_file.exists() and raw_file.stat().st_size > 0)
 
-    def read_day(self, day: str | date, *, chunksize: int = 100_000, trades_url_template: str | None = None) -> Iterator[pd.DataFrame]:
+    def read_day(
+        self,
+        day: str | date,
+        *,
+        chunksize: int = 100_000,
+        trades_url_template: str | None = None,
+        minimal: bool = False,
+    ) -> Iterator[pd.DataFrame]:
         """Read one local day from ZIP. Does not download missing data."""
         template = trades_url_template if trades_url_template is not None else self.trades_url_template
         raw_file = self.find_local_trade_file(day, template=template)
         if raw_file is None:
             return
-        yield from self.read_zip(raw_file, chunksize=chunksize)
+        yield from self.read_zip(raw_file, chunksize=chunksize, minimal=minimal)
 
-    def read_zip(self, path: str | Path, *, chunksize: int = 100_000) -> Iterator[pd.DataFrame]:
+    def read_zip(
+        self,
+        path: str | Path,
+        *,
+        chunksize: int = 100_000,
+        minimal: bool = False,
+    ) -> Iterator[pd.DataFrame]:
         """Stream normalized trade chunks directly from a ZIP/CSV file."""
-        yield from self._iter_trade_file(path, chunksize=chunksize)
+        yield from self._iter_trade_file(path, chunksize=chunksize, minimal=minimal)
 
     def find_local_trade_file(self, day: str | date, *, template: str | None = None) -> Path | None:
         """Find a local raw trades file for the day.
@@ -164,9 +177,27 @@ class OKXTickLoader:
         d = self._parse_date(day)
         return self.raw_dir / f"{d.year:04d}" / f"{d.month:02d}" / Path(filename).name
 
-    def _iter_trade_file(self, path: str | Path, *, chunksize: int) -> Iterator[pd.DataFrame]:
+    def _iter_trade_file(
+        self,
+        path: str | Path,
+        *,
+        chunksize: int,
+        minimal: bool = False,
+    ) -> Iterator[pd.DataFrame]:
         p = Path(path)
         suffix = p.suffix.lower()
+        wanted = {
+            "ts", "timestamp", "time", "datetime", "created_time", "createdtime",
+            "create_time", "created_at", "createdat", "px", "price", "sz", "size",
+            "qty", "amount", "side",
+        }
+
+        def use_column(name: str) -> bool:
+            return str(name).strip().lower() in wanted
+
+        read_kwargs = {"chunksize": chunksize}
+        if minimal:
+            read_kwargs["usecols"] = use_column
         if suffix == ".zip":
             with zipfile.ZipFile(p) as zf:
                 members = [name for name in zf.namelist() if not name.endswith("/")]
@@ -174,18 +205,18 @@ class OKXTickLoader:
                     raise RuntimeError(f"empty OKX trade ZIP: {p}")
                 for name in members:
                     with zf.open(name) as f:
-                        for raw in pd.read_csv(f, chunksize=chunksize):
-                            chunk = self._normalize_trades(raw)
+                        for raw in pd.read_csv(f, **read_kwargs):
+                            chunk = self._normalize_trades(raw, minimal=minimal)
                             if not chunk.empty:
                                 yield chunk
             return
 
-        for raw in pd.read_csv(p, chunksize=chunksize):
-            chunk = self._normalize_trades(raw)
+        for raw in pd.read_csv(p, **read_kwargs):
+            chunk = self._normalize_trades(raw, minimal=minimal)
             if not chunk.empty:
                 yield chunk
 
-    def _normalize_trades(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_trades(self, df: pd.DataFrame, *, minimal: bool = False) -> pd.DataFrame:
         out = df.copy()
         rename = {}
         for col in out.columns:
@@ -222,10 +253,19 @@ class OKXTickLoader:
         for col in ["trade_id", "price", "size", "side"]:
             if col not in out.columns:
                 out[col] = None
-        out["symbol"] = self.symbol
         out["price"] = pd.to_numeric(out["price"], errors="coerce")
         out["size"] = pd.to_numeric(out["size"], errors="coerce")
         out["side"] = out["side"].astype(str).str.lower()
+
+        # Heavy prebuild paths only need four primitive columns.  Skipping the
+        # timestamp materialization and row-wise raw_json serialization avoids
+        # a large amount of Python work without changing any trade semantics.
+        if minimal:
+            out = out[["ts_ms", "price", "size", "side"]]
+            out = out.dropna(subset=["ts_ms", "price", "size"]).sort_values("ts_ms")
+            return out.reset_index(drop=True)
+
+        out["symbol"] = self.symbol
 
         base = {"ts_ms", "timestamp", "symbol", "trade_id", "price", "size", "side"}
         extra_cols = [c for c in out.columns if c not in base]
