@@ -168,6 +168,10 @@ python tools/backtest_local_data.py \
   --max-events 100000
 ```
 
+```bash
+python tools/download_okx_historical_data.py --kind trades --symbol ETH-USDT-SWAP --start-date 2020-01-01 --end-date 2026-07-30 --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
+```
+
 Important: A1 iceberg settlement depends on order book updates. Trades-only mode is only a parser/replay smoke test, not a full A1 evaluation.
 
 ## 3. Supported input file types

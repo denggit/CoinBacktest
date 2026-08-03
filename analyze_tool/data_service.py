@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,18 @@ from src.data_feed.okx_trade_bar_loader import OKXTradeBarLoader  # noqa: E402
 TIME_TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
 TRADE_BAR_TIMEFRAMES = ["1s", "5s", "10s", "15s", "30s", "1m", "5m", "15m", "30m", "1H", "4H", "1D"]
 RANGE_PRESETS = [0.0015, 0.0020, 0.0025]
-MAX_RETURN_BARS = 2000000
+ADAPTIVE_DISPLAY_BUDGET = 100_000
+
+
+def _datetime_index_ns(values: Any) -> pd.DatetimeIndex:
+    """Normalize loader timestamps to timezone-naive datetime64[ns]."""
+    index = pd.DatetimeIndex(pd.to_datetime(values, errors="raise"))
+    if index.tz is not None:
+        index = index.tz_convert(None)
+    try:
+        return index.as_unit("ns")
+    except AttributeError:
+        return pd.DatetimeIndex(index.to_numpy(dtype="datetime64[ns]"))
 
 
 @dataclass(frozen=True)
@@ -97,7 +108,6 @@ def parse_request(params: dict[str, Any]) -> LoadRequest:
     limit = int(params.get("limit", 5000))
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    limit = min(limit, MAX_RETURN_BARS)
     chunksize = int(params.get("chunksize", 300_000))
     chunksize = max(10_000, min(chunksize, 2_000_000))
     local_only = parse_bool(params.get("local_only"), default=True)
@@ -114,45 +124,114 @@ def parse_request(params: dict[str, Any]) -> LoadRequest:
     )
 
 
+
+
+def _timeframe_seconds(timeframe: str) -> int | None:
+    mapping = {
+        "1s": 1, "5s": 5, "10s": 10, "15s": 15, "30s": 30,
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1H": 3600, "4H": 14400, "1D": 86400,
+    }
+    return mapping.get(str(timeframe))
+
+
+def estimate_requested_bars(req: LoadRequest) -> int | None:
+    """Estimate source rows before loading to protect the interactive server."""
+    if req.data_type == "range_bar":
+        return None
+    seconds = _timeframe_seconds(req.timeframe)
+    if not seconds:
+        return None
+    start = pd.Timestamp(req.start)
+    end = pd.Timestamp(req.end)
+    if end < start:
+        raise ValueError("end must be >= start")
+    return int((end - start).total_seconds() // seconds) + 1
+
+
+def _available_timeframes(data_type: str) -> list[str]:
+    if data_type == "normal":
+        return list(TIME_TIMEFRAMES)
+    if data_type == "trade_bar":
+        return list(TRADE_BAR_TIMEFRAMES)
+    return []
+
+
+def resolve_adaptive_timeframe(req: LoadRequest) -> tuple[LoadRequest, int | None, int | None]:
+    """Choose a coarser loader timeframe for very wide chart overviews.
+
+    This is not a hard row limit. The requested date range is always preserved.
+    A two-year 1m request is rendered from an existing causal higher-timeframe
+    table (for example 15m), while shorter ranges automatically stay at 1m.
+    """
+    source_rows = estimate_requested_bars(req)
+    if req.data_type == "range_bar" or source_rows is None or source_rows <= ADAPTIVE_DISPLAY_BUDGET:
+        return req, source_rows, source_rows
+
+    requested_seconds = _timeframe_seconds(req.timeframe) or 1
+    for timeframe in _available_timeframes(req.data_type):
+        seconds = _timeframe_seconds(timeframe) or 1
+        if seconds < requested_seconds:
+            continue
+        candidate = replace(req, timeframe=timeframe)
+        display_rows = estimate_requested_bars(candidate)
+        if display_rows is not None and display_rows <= ADAPTIVE_DISPLAY_BUDGET:
+            return candidate, source_rows, display_rows
+
+    fallback = replace(req, timeframe=_available_timeframes(req.data_type)[-1])
+    return fallback, source_rows, estimate_requested_bars(fallback)
+
+
 def load_dataframe(req: LoadRequest) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Load bars through the existing data_feed loaders."""
+    """Load bars through existing data_feed loaders with adaptive overview resolution."""
+    effective_req, estimated_source_rows, estimated_display_rows = resolve_adaptive_timeframe(req)
     meta: dict[str, Any] = {
         "data_type": req.data_type,
         "symbol": req.symbol,
-        "timeframe": req.timeframe,
+        "requested_timeframe": req.timeframe,
+        "timeframe": effective_req.timeframe,
+        "adaptive_resolution": effective_req.timeframe != req.timeframe,
         "range_pct": req.range_pct,
         "local_only": req.local_only,
+        "estimated_source_rows": estimated_source_rows,
+        "estimated_display_rows": estimated_display_rows,
+        "adaptive_display_budget": ADAPTIVE_DISPLAY_BUDGET,
     }
-    if req.data_type == "normal":
-        loader = OKXDataLoader(symbol=req.symbol, timeframe=req.timeframe)
+    if effective_req.data_type == "normal":
+        loader = OKXDataLoader(symbol=effective_req.symbol, timeframe=effective_req.timeframe)
         meta["loader"] = "src.data_feed.okx_loader.OKXDataLoader"
         meta["db_path"] = str(Path(loader.db_path))
         meta["table_name"] = loader.table_name
-        if req.local_only:
+        if effective_req.local_only:
             df = loader.load_local_data()
-            df = _slice_indexed(df, req.start, req.end)
+            df = _slice_indexed(df, effective_req.start, effective_req.end)
         else:
-            df = loader.fetch_data_by_date_range(req.start, req.end)
-    elif req.data_type == "trade_bar":
-        loader = OKXTradeBarLoader(symbol=req.symbol, timeframe=req.timeframe)
+            df = loader.fetch_data_by_date_range(effective_req.start, effective_req.end)
+    elif effective_req.data_type == "trade_bar":
+        loader = OKXTradeBarLoader(symbol=effective_req.symbol, timeframe=effective_req.timeframe)
         meta["loader"] = "src.data_feed.okx_trade_bar_loader.OKXTradeBarLoader"
         meta["db_path"] = str(loader.db_path)
         meta["table_name"] = loader.table_name
-        if req.local_only:
-            df = loader.load_local_data(req.start, req.end)
+        if effective_req.local_only:
+            df = loader.load_local_data(effective_req.start, effective_req.end)
         else:
-            df = loader.fetch_data_by_date_range(req.start, req.end, chunksize=req.chunksize, build_missing=True)
+            df = loader.fetch_data_by_date_range(effective_req.start, effective_req.end, chunksize=effective_req.chunksize, build_missing=True)
     else:
-        loader = OKXRangeBarLoader(symbol=req.symbol, range_pct=req.range_pct)
+        loader = OKXRangeBarLoader(symbol=effective_req.symbol, range_pct=effective_req.range_pct)
         meta["loader"] = "src.data_feed.okx_range_bar_loader.OKXRangeBarLoader"
         meta["db_path"] = str(loader.db_path)
         meta["table_name"] = loader.table_name
-        if req.local_only:
-            df = loader.load_local_data(req.start, req.end)
+        if effective_req.local_only:
+            df = loader.load_local_data(effective_req.start, effective_req.end)
         else:
-            df = loader.fetch_data_by_date_range(req.start, req.end, chunksize=req.chunksize)
-    df = _prepare_ohlcv_dataframe(df, req.data_type).tail(req.limit)
+            df = loader.fetch_data_by_date_range(effective_req.start, effective_req.end, chunksize=effective_req.chunksize)
+    df = _prepare_ohlcv_dataframe(df, effective_req.data_type).tail(req.limit)
     meta["rows"] = int(len(df))
+    if meta["adaptive_resolution"]:
+        meta["resolution_note"] = (
+            f"请求 {req.timeframe} 全范围；为避免百万级JSON常驻内存，概览自动使用 "
+            f"{effective_req.timeframe}。缩短日期范围后会自动恢复 {req.timeframe}。"
+        )
     if not df.empty:
         meta["start"] = pd.Timestamp(df.index[0]).strftime("%Y-%m-%d %H:%M:%S")
         meta["end"] = pd.Timestamp(df.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
@@ -163,9 +242,9 @@ def _slice_indexed(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
-    out.index = pd.to_datetime(out.index)
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
+    out.index = _datetime_index_ns(out.index)
+    start_ts = _datetime_index_ns([start])[0]
+    end_ts = _datetime_index_ns([end])[0]
     return out[(out.index >= start_ts) & (out.index <= end_ts)]
 
 
@@ -174,10 +253,10 @@ def _prepare_ohlcv_dataframe(df: pd.DataFrame, data_type: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     out = df.copy()
     if data_type == "range_bar" and "end_ts" in out.columns:
-        out.index = pd.to_datetime(out["end_ts"])
+        out.index = _datetime_index_ns(out["end_ts"])
         out.index.name = "timestamp"
     else:
-        out.index = pd.to_datetime(out.index)
+        out.index = _datetime_index_ns(out.index)
         out.index.name = "timestamp"
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in out.columns:

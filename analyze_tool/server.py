@@ -138,7 +138,13 @@ def json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], stat
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        sys.stderr.write(
+            f"[analyze_tool] client disconnected while writing JSON response "
+            f"status={status} bytes={len(body):,}\n"
+        )
 
 
 def error_response(handler: BaseHTTPRequestHandler, message: str, status: int = 400, *, debug: str | None = None) -> None:
@@ -189,7 +195,9 @@ class AnalyzeToolHandler(BaseHTTPRequestHandler):
                 return
             error_response(self, f"not found: {path}", status=HTTPStatus.NOT_FOUND)
         except Exception as exc:  # pragma: no cover - shown to user in browser
-            error_response(self, str(exc), status=HTTPStatus.BAD_REQUEST, debug=traceback.format_exc())
+            debug = traceback.format_exc()
+            sys.stderr.write(f"[analyze_tool] GET {path} failed: {exc}\n{debug}")
+            error_response(self, str(exc), status=HTTPStatus.BAD_REQUEST, debug=debug)
 
     def do_POST(self) -> None:  # noqa: N802
         path, _params = parse_query(self.path)
@@ -230,7 +238,9 @@ class AnalyzeToolHandler(BaseHTTPRequestHandler):
                 return
             error_response(self, f"not found: {path}", status=HTTPStatus.NOT_FOUND)
         except Exception as exc:  # pragma: no cover - shown to user in browser
-            error_response(self, str(exc), status=HTTPStatus.BAD_REQUEST, debug=traceback.format_exc())
+            debug = traceback.format_exc()
+            sys.stderr.write(f"[analyze_tool] POST {path} failed: {exc}\n{debug}")
+            error_response(self, str(exc), status=HTTPStatus.BAD_REQUEST, debug=debug)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Keep console clean while preserving useful request lines.

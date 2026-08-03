@@ -170,6 +170,13 @@ function currentDataParams() {
   };
 }
 
+function validateInteractiveRange(_params, _plugin = null) {
+  // Wide ranges are handled by the backend's adaptive overview resolution.
+  // Never reject a valid date range in the browser solely because it contains
+  // many source bars. Shorter ranges automatically return to the requested
+  // fine timeframe.
+}
+
 function parseTimestampMs(value) {
   if (value === null || value === undefined) return NaN;
   if (typeof value === 'number') return Number(value);
@@ -413,7 +420,7 @@ function renderPluginParams() {
   const wrap = $('pluginParams');
   if (!p) { wrap.innerHTML = '<div class="mini">暂无插件</div>'; return; }
   const params = p.params || [];
-  const compactPlugins = new Set(['market_state_map_v0', 'estimated_liquidation_heatmap_v1', 'offline_orderbook_liquidity_heatmap_v1']);
+  const compactPlugins = new Set(['market_state_map_v0', 'estimated_liquidation_heatmap_v1', 'offline_orderbook_liquidity_heatmap_v1', 'ai_market_state_timeline_r03_3_3_1']);
   if (!compactPlugins.has(p.id)) {
     wrap.innerHTML = params.map(renderParamControl).join('');
     return;
@@ -423,6 +430,8 @@ function renderPluginParams() {
     primaryNames = new Set(['display_mode']);
   } else if (p.id === 'offline_orderbook_liquidity_heatmap_v1') {
     primaryNames = new Set(['display_mode', 'normalization', 'depth_unit', 'manual_max', 'large_window_hours', 'large_percentile', 'display_price_step']);
+  } else if (p.id === 'ai_market_state_timeline_r03_3_3_1') {
+    primaryNames = new Set(['view_mode', 'show_transition_markers', 'show_outcome_audit']);
   } else {
     primaryNames = new Set(['view_mode', 'show_watch_markers']);
   }
@@ -446,7 +455,9 @@ function pluginParams() {
 async function loadCandles() {
   try {
     setStatus('加载中...');
-    const data = await getJson('/api/candles?' + qs(currentDataParams()));
+    const params = currentDataParams();
+    validateInteractiveRange(params);
+    const data = await getJson('/api/candles?' + qs(params));
     state.candles = (data.candles || []).map(candle => {
       const chartTime = parseTimestampMs(candle.timestamp);
       return { ...candle, source_time: candle.time, time: chartTime };
@@ -494,8 +505,16 @@ async function loadCandles() {
       $('jumpDate').value = '';
     }
     $('chartTitle').textContent = `${data.meta.symbol} · ${data.meta.data_type}`;
-    $('chartSub').textContent = n ? `${data.meta.start} → ${data.meta.end} · ${n} bars · ${data.meta.table_name || ''}` : `无数据：${data.meta.table_name || ''}`;
-    setStatus(n ? `已加载 ${n} 根，来源 ${data.meta.loader}` : '没有读到数据。确认本地 DB 覆盖，或取消“只读本地缓存”让 loader 自动补数据。', n === 0);
+    const resolutionText = data.meta.adaptive_resolution
+      ? ` · 请求 ${data.meta.requested_timeframe} / 概览 ${data.meta.timeframe}`
+      : ` · ${data.meta.timeframe || params.timeframe}`;
+    $('chartSub').textContent = n
+      ? `${data.meta.start} → ${data.meta.end} · ${n} bars${resolutionText} · ${data.meta.table_name || ''}`
+      : `无数据：${data.meta.table_name || ''}`;
+    const loadedStatus = data.meta.resolution_note
+      ? `已加载 ${n} 根。${data.meta.resolution_note}`
+      : `已加载 ${n} 根，来源 ${data.meta.loader}`;
+    setStatus(n ? loadedStatus : '没有读到数据。确认本地 DB 覆盖，或取消“只读本地缓存”让 loader 自动补数据。', n === 0);
     updateDetails(null);
     draw();
   } catch (err) {
@@ -567,10 +586,12 @@ async function runPlugin() {
   if (!plugin) return;
   try {
     setStatus('运行插件中...');
+    const dataParams = currentDataParams();
+    validateInteractiveRange(dataParams, plugin);
     const data = await getJson('/api/plugin-markers', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ data: currentDataParams(), plugin_id: plugin.id, params: pluginParams() })
+      body: JSON.stringify({ data: dataParams, plugin_id: plugin.id, params: pluginParams() })
     });
     state.markers = data.markers || [];
     state.regions = data.regions || [];
@@ -619,7 +640,10 @@ async function runPlugin() {
     const advancedPanel = $('advancedDetailPanel');
     if (advancedPanel && state.pluginUi.advanced_collapsed !== false) advancedPanel.open = false;
     $('pluginSummary').textContent = s.display || `匹配 ${s.matched ?? 0} / ${s.input_rows ?? 0} 根；上影 ${s.upper_count ?? '-'}，下影 ${s.lower_count ?? '-'}`;
-    setStatus(`插件完成：${plugin.name}，节点 ${state.markers.length} 个，区间 ${state.regions.length} 个，指标轨道 ${state.tracks.length} 条，状态色带 ${state.bands.length} 条，热力格 ${state.heatmap.length} 个，墙框 ${state.priceRegions.length} 个`);
+    const pluginResolution = data.meta?.adaptive_resolution
+      ? `；请求 ${data.meta.requested_timeframe}，概览使用 ${data.meta.timeframe}`
+      : '';
+    setStatus(`插件完成：${plugin.name}，节点 ${state.markers.length} 个，区间 ${state.regions.length} 个，指标轨道 ${state.tracks.length} 条，状态色带 ${state.bands.length} 条，热力格 ${state.heatmap.length} 个，墙框 ${state.priceRegions.length} 个${pluginResolution}`);
     updateDetails(state.selectedIndex ?? state.hoverIndex);
     draw();
   } catch (err) {
@@ -1880,6 +1904,27 @@ function compactStateBrief(index) {
   const processUplift = rowFieldValue('brief_process_probability_uplift', index);
   const processSamples = rowFieldValue('brief_process_samples', index);
   if (direction === null && phase === null && process === null) return null;
+  const strategicAge = Number(rowFieldValue('strategic_age_days', index));
+  const tacticalAge = Number(rowFieldValue('tactical_age_hours', index));
+  const entryAge = Number(rowFieldValue('entry_age_hours', index));
+  const activityAge = Number(rowFieldValue('activity_age_hours', index));
+  const persist = Number(rowFieldValue('activity_persist_h3_probability', index));
+  const risk = Number(rowFieldValue('activity_transition_risk_h3', index));
+  const alignment = Number(rowFieldValue('all_direction_alignment', index));
+  const stAlign = Number(rowFieldValue('strategic_tactical_alignment', index));
+  const teAlign = Number(rowFieldValue('tactical_entry_alignment', index));
+  const fallbackReason1 = Number.isFinite(strategicAge) || Number.isFinite(tacticalAge)
+    ? `战略已持续约${Number.isFinite(strategicAge) ? strategicAge.toFixed(1) : '-'}天；战术约${Number.isFinite(tacticalAge) ? tacticalAge.toFixed(1) : '-'}小时`
+    : null;
+  const fallbackReason2 = Number.isFinite(entryAge) || Number.isFinite(activityAge)
+    ? `入场层约${Number.isFinite(entryAge) ? entryAge.toFixed(1) : '-'}小时；活跃度约${Number.isFinite(activityAge) ? activityAge.toFixed(1) : '-'}小时`
+    : null;
+  const fallbackReason3 = Number.isFinite(persist)
+    ? `OOS活跃状态持续3小时概率 ${(persist * 100).toFixed(1)}%；转换风险 ${(risk * 100).toFixed(1)}%`
+    : '活跃持续概率只在2024/2025有完整OOS结果';
+  const fallbackDetail = Number.isFinite(alignment)
+    ? `方向一致性 ${alignment >= 0 ? '+' : ''}${alignment.toFixed(3)}；战略/战术 ${Number.isFinite(stAlign) ? stAlign.toFixed(3) : '-'}；战术/入场 ${Number.isFinite(teAlign) ? teAlign.toFixed(3) : '-'}`
+    : null;
   return {
     direction: direction || '-',
     phase: phase || '-',
@@ -1887,11 +1932,11 @@ function compactStateBrief(index) {
     processProbability,
     processUplift,
     processSamples,
-    reason1: rowFieldValue('brief_reason_1', index),
-    reason2: rowFieldValue('brief_reason_2', index),
-    reason3: rowFieldValue('brief_reason_3', index),
+    reason1: rowFieldValue('brief_reason_1', index) || fallbackReason1,
+    reason2: rowFieldValue('brief_reason_2', index) || fallbackReason2,
+    reason3: rowFieldValue('brief_reason_3', index) || fallbackReason3,
     advice: rowFieldValue('brief_advice', index),
-    detail: rowFieldValue('brief_context_detail', index),
+    detail: rowFieldValue('brief_context_detail', index) || fallbackDetail,
   };
 }
 

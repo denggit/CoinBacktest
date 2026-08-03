@@ -19,6 +19,136 @@ CAUSAL_TRIGGERS: tuple[str, ...] = (
 )
 
 
+def raw_hourly_coverage_report(raw_coverage: pd.DataFrame) -> pd.DataFrame:
+    """Summarize raw-window matching by project-local start hour."""
+
+    columns = [
+        "project_hour", "attempted_windows", "checked_windows_with_raw_day",
+        "matched_raw_windows", "no_trade_windows", "missing_raw_windows",
+        "no_trade_rate", "match_rate",
+    ]
+    if raw_coverage.empty or "start_time" not in raw_coverage.columns:
+        return pd.DataFrame(columns=columns)
+    frame = raw_coverage.copy()
+    frame["start_time"] = pd.to_datetime(frame["start_time"], errors="coerce")
+    frame = frame.loc[frame["start_time"].notna()].copy()
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    frame["project_hour"] = frame["start_time"].dt.hour.astype("int64")
+    status = frame.get("status", pd.Series(index=frame.index, dtype="object")).astype(str)
+    frame["matched"] = status.eq("complete")
+    frame["no_trade"] = status.eq("no_trades_in_window")
+    frame["missing"] = status.eq("missing_raw_day")
+    rows: list[dict[str, object]] = []
+    for hour, group in frame.groupby("project_hour", sort=True):
+        matched = int(group["matched"].sum())
+        no_trade = int(group["no_trade"].sum())
+        missing = int(group["missing"].sum())
+        checked = matched + no_trade
+        attempted = int(len(group))
+        rows.append(
+            {
+                "project_hour": int(hour),
+                "attempted_windows": attempted,
+                "checked_windows_with_raw_day": checked,
+                "matched_raw_windows": matched,
+                "no_trade_windows": no_trade,
+                "missing_raw_windows": missing,
+                "no_trade_rate": float(no_trade / checked) if checked else np.nan,
+                "match_rate": float(matched / attempted) if attempted else np.nan,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def validate_micro_data_gate(
+    universe: pd.DataFrame,
+    window_features: pd.DataFrame,
+    triggers: pd.DataFrame,
+    raw_coverage: pd.DataFrame,
+    *,
+    max_no_trade_rate: float = 0.02,
+    min_checked_windows: int = 10,
+    max_hour_no_trade_rate: float = 0.10,
+    min_hour_windows: int = 20,
+) -> dict[str, object]:
+    """Fail fast on timestamp, timezone, or archive-partition misalignment."""
+
+    attempted = int(len(universe))
+    complete = int(len(window_features))
+    trigger_rows = int(len(triggers))
+    if raw_coverage.empty:
+        raise RuntimeError(
+            "R06 micro data gate failed: raw coverage is empty. "
+            "The raw-trade loader did not audit any event window."
+        )
+
+    status = raw_coverage.get("status", pd.Series(dtype="object")).astype(str)
+    missing = int(status.eq("missing_raw_day").sum())
+    legacy_cross = int(status.eq("cross_utc_day_skipped").sum())
+    no_trade = int(status.eq("no_trades_in_window").sum())
+    matched = int(status.eq("complete").sum())
+    checked = matched + no_trade
+    no_trade_rate = float(no_trade / checked) if checked else np.nan
+    hourly = raw_hourly_coverage_report(raw_coverage)
+    eligible_hours = hourly.loc[hourly["checked_windows_with_raw_day"] >= int(min_hour_windows)].copy()
+    failed_hours = eligible_hours.loc[eligible_hours["no_trade_rate"] > float(max_hour_no_trade_rate)].copy()
+
+    partition_mismatches = 0
+    if {"start_time", "raw_archive_day"}.issubset(raw_coverage.columns):
+        local_day = pd.to_datetime(raw_coverage["start_time"], errors="coerce").dt.strftime("%Y-%m-%d")
+        archive_day = raw_coverage["raw_archive_day"].astype(str)
+        partition_mismatches = int((local_day.notna() & archive_day.notna() & local_day.ne(archive_day)).sum())
+
+    worst_hour = None
+    if not eligible_hours.empty:
+        worst = eligible_hours.sort_values(["no_trade_rate", "checked_windows_with_raw_day"], ascending=[False, False]).iloc[0]
+        worst_hour = {
+            "project_hour": int(worst["project_hour"]),
+            "checked": int(worst["checked_windows_with_raw_day"]),
+            "matched": int(worst["matched_raw_windows"]),
+            "no_trade_rate": float(worst["no_trade_rate"]),
+        }
+    diagnostic = {
+        "attempted_windows": attempted,
+        "checked_windows_with_raw_day": checked,
+        "matched_raw_windows": matched,
+        "no_trade_windows": no_trade,
+        "no_trade_rate": no_trade_rate,
+        "missing_raw_windows": missing,
+        "legacy_cross_utc_day_windows": legacy_cross,
+        "archive_partition_mismatches": partition_mismatches,
+        "hourly_failed_hours": failed_hours["project_hour"].astype(int).tolist(),
+        "worst_hour": worst_hour,
+        "micro_complete_windows": complete,
+        "trigger_rows": trigger_rows,
+    }
+
+    alignment_failed = checked >= int(min_checked_windows) and no_trade_rate > float(max_no_trade_rate)
+    hourly_failed = not failed_hours.empty
+    if complete == 0 or alignment_failed or hourly_failed or partition_mismatches or legacy_cross:
+        sample_cols = [
+            name for name in (
+                "window_id", "start_time", "end_time", "status", "raw_archive_day",
+                "raw_archive_days", "requested_start_ms", "requested_end_ms",
+                "raw_min_ts_ms", "raw_max_ts_ms", "raw_path",
+            ) if name in raw_coverage.columns
+        ]
+        bad_mask = status.isin(["no_trades_in_window", "cross_utc_day_skipped"])
+        sample = raw_coverage.loc[bad_mask, sample_cols].head(5)
+        sample_text = sample.to_string(index=False) if not sample.empty else "<none>"
+        hourly_text = failed_hours.to_string(index=False) if not failed_hours.empty else "<none>"
+        raise RuntimeError(
+            "R06 micro data gate failed: event windows did not produce reliable all-day 1s data.\n"
+            f"diagnostic={diagnostic}\n"
+            "Likely causes: timestamp unit mismatch, archive filename timezone mismatch, "
+            "wrong raw symbol/path, or incomplete raw files.\n"
+            f"failed_hourly_coverage:\n{hourly_text}\n"
+            f"sample_bad_windows:\n{sample_text}"
+        )
+    return diagnostic
+
+
 def _num(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce")
 
@@ -48,7 +178,9 @@ def data_quality_report(
         {"check": "micro_complete_windows", "value": int((micro_audit.get("status") == "complete").sum()) if not micro_audit.empty else 0, "status": "INFO"},
         {"check": "micro_insufficient_windows", "value": int((micro_audit.get("status") != "complete").sum()) if not micro_audit.empty else len(universe), "status": "INFO"},
         {"check": "raw_missing_windows", "value": int((raw_coverage.get("status") == "missing_raw_day").sum()) if not raw_coverage.empty else 0, "status": "INFO"},
-        {"check": "cross_utc_day_windows_skipped", "value": int((raw_coverage.get("status") == "cross_utc_day_skipped").sum()) if not raw_coverage.empty else 0, "status": "INFO"},
+        {"check": "raw_no_trade_windows", "value": int((raw_coverage.get("status") == "no_trades_in_window").sum()) if not raw_coverage.empty else 0, "status": "PASS" if raw_coverage.empty or int((raw_coverage.get("status") == "no_trades_in_window").sum()) == 0 else "WARN"},
+        {"check": "cross_archive_day_windows_reconstructed", "value": int((pd.to_numeric(raw_coverage.get("archive_day_span"), errors="coerce") > 1).sum()) if not raw_coverage.empty and "archive_day_span" in raw_coverage else 0, "status": "INFO"},
+        {"check": "legacy_cross_utc_day_windows_skipped", "value": int((raw_coverage.get("status") == "cross_utc_day_skipped").sum()) if not raw_coverage.empty else 0, "status": "PASS" if raw_coverage.empty or int((raw_coverage.get("status") == "cross_utc_day_skipped").sum()) == 0 else "FAIL"},
         {"check": "range_chunks_missing", "value": int((range_audit.get("status") == "missing_range_cache").sum()) if not range_audit.empty else 0, "status": "INFO"},
     ]
     forbidden = [name for name in universe.columns if name.startswith("future_")]

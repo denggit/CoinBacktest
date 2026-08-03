@@ -4,9 +4,10 @@
 
 This loader exists for research that needs second-level data only around sparse
 historical events.  Building a complete multi-year 1s SQLite table is often
-unnecessarily large.  Instead, this module reads each required UTC raw-trade day
-once, extracts only requested local-time windows, aggregates those slices, and
-yields one bounded daily batch.
+unnecessarily large.  Instead, this module reads each required project-local raw-trade archive day,
+extracts only requested windows, aggregates those slices, and yields one
+bounded batch. OKX trade rows retain Unix UTC milliseconds; the ZIP filename
+date follows CoinBacktest's project timezone (UTC+8 by default).
 
 Causality and timestamp semantics
 ---------------------------------
@@ -35,7 +36,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -88,18 +89,50 @@ BAR_COLUMNS: tuple[str, ...] = (
     "vwap",
 )
 
+UTC_NAIVE_EPOCH = pd.Timestamp("1970-01-01 00:00:00")
+
+
+def datetime_series_to_epoch_ms(values: pd.Series) -> pd.Series:
+    """Convert naive datetimes to Unix milliseconds without dtype assumptions.
+
+    Pandas may store datetimes internally as ns, us, or ms depending on the
+    version and source data. Dividing ``astype('int64')`` by a hard-coded
+    1,000,000 silently produces seconds when the dtype is ``datetime64[us]``.
+    Timedelta floor-division is unit-independent and therefore safe across
+    pandas 2/3/4 datetime resolutions.
+    """
+
+    parsed = pd.to_datetime(values, errors="coerce")
+    return ((parsed - UTC_NAIVE_EPOCH) // pd.Timedelta(milliseconds=1)).astype("int64")
+
 
 @dataclass(frozen=True)
 class DailyEventWindowBatch:
-    """One UTC day's compact event-window bars and coverage audit."""
+    """One project-local archive day's compact event-window bars and audit.
 
-    utc_day: date
+    ``archive_day`` is the date encoded in the OKX raw ZIP filename. The ZIP
+    is partitioned by the CoinBacktest project timezone (UTC+8 by default),
+    while trade timestamps inside remain Unix UTC milliseconds.
+    """
+
+    archive_day: date
     bars: pd.DataFrame
     coverage: pd.DataFrame
 
+    @property
+    def utc_day(self) -> date:
+        """Backward-compatible alias; the value is an archive/local day."""
+
+        return self.archive_day
+
 
 class OKXEventTradeWindowLoader:
-    """Extract sparse event-local second/minute trade bars from raw OKX ZIPs."""
+    """Extract sparse event-local second/minute trade bars from raw OKX ZIPs.
+
+    Raw ZIP filename dates follow the project-local calendar. Event timestamps
+    are converted to UTC milliseconds only for row filtering. Windows crossing
+    project-local midnight are reconstructed from both adjacent archives.
+    """
 
     def __init__(
         self,
@@ -134,38 +167,35 @@ class OKXEventTradeWindowLoader:
         allow_download_missing: bool = False,
         progress_callback: Callable[[int, int, date], None] | None = None,
     ) -> Iterator[DailyEventWindowBatch]:
-        """Yield compact bars for requested event windows, one raw UTC day at a time.
+        """Yield compact bars by project-local raw archive day.
 
-        Required input columns are ``window_id``, ``start_time`` and ``end_time``.
-        Time intervals are left-closed/right-open. Duplicate ``window_id`` values
-        are rejected so downstream feature tables remain one-to-one.
+        Required columns are ``window_id``, ``start_time`` and ``end_time``.
+        Intervals are left-closed/right-open. Duplicate IDs are rejected.
         """
 
         prepared, pre_audit = self.prepare_windows(windows)
         if prepared.empty:
             if not pre_audit.empty:
                 yield DailyEventWindowBatch(
-                    utc_day=date(1970, 1, 1),
+                    archive_day=date(1970, 1, 1),
                     bars=pd.DataFrame(columns=BAR_COLUMNS),
                     coverage=pre_audit,
                 )
             return
 
         freq, delta = self._parse_timeframe(timeframe)
-        groups = list(prepared.groupby("utc_day", sort=True))
+        groups = list(prepared.groupby("archive_day", sort=True))
         total = len(groups)
         if not pre_audit.empty:
-            # Emit unsupported/cross-day rows once, without creating a fake
-            # research value.  The sentinel day is explicit in the audit.
             yield DailyEventWindowBatch(
-                utc_day=date(1970, 1, 1),
+                archive_day=date(1970, 1, 1),
                 bars=pd.DataFrame(columns=BAR_COLUMNS),
                 coverage=pre_audit,
             )
 
-        for done, (utc_day, day_windows) in enumerate(groups, start=1):
-            batch = self._load_one_day(
-                utc_day=utc_day,
+        for done, (archive_day, day_windows) in enumerate(groups, start=1):
+            batch = self._load_one_archive_day(
+                archive_day=archive_day,
                 day_windows=day_windows,
                 freq=freq,
                 timeframe_delta=delta,
@@ -174,7 +204,7 @@ class OKXEventTradeWindowLoader:
             )
             yield batch
             if progress_callback is not None:
-                progress_callback(done, total, utc_day)
+                progress_callback(done, total, archive_day)
 
     def prepare_windows(self, windows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         required = {"window_id", "start_time", "end_time"}
@@ -194,83 +224,106 @@ class OKXEventTradeWindowLoader:
         bad_rows["status"] = "invalid_window"
         frame = frame.loc[~bad_time].copy()
 
+        # ZIP filename dates are project-local calendar dates. Deriving the file
+        # day from UTC maps local 00:00-07:59 to the previous ZIP and creates a
+        # fake recurring eight-hour data gap.
+        frame["archive_day"] = frame["start_time"].dt.date
+        frame["archive_end_day"] = (frame["end_time"] - pd.Timedelta(microseconds=1)).dt.date
+        frame["archive_day_span"] = (
+            pd.to_datetime(frame["archive_end_day"]) - pd.to_datetime(frame["archive_day"])
+        ).dt.days + 1
+
         offset = pd.Timedelta(hours=self.timezone_offset_hours)
         frame["start_utc"] = frame["start_time"] - offset
         frame["end_utc"] = frame["end_time"] - offset
-        start_day = frame["start_utc"].dt.date
-        # Right-open interval: subtract one microsecond before choosing the final day.
-        end_day = (frame["end_utc"] - pd.Timedelta(microseconds=1)).dt.date
-        cross = start_day != end_day
-        cross_rows = frame.loc[cross, ["window_id", "start_time", "end_time"]].copy()
-        cross_rows["status"] = "cross_utc_day_skipped"
-        frame = frame.loc[~cross].copy()
-        frame["utc_day"] = frame["start_utc"].dt.date
-        frame["start_ms"] = (frame["start_utc"].astype("int64") // 1_000_000).astype("int64")
-        frame["end_ms"] = (frame["end_utc"].astype("int64") // 1_000_000).astype("int64")
+        frame["start_ms"] = datetime_series_to_epoch_ms(frame["start_utc"])
+        frame["end_ms"] = datetime_series_to_epoch_ms(frame["end_utc"])
 
-        audit_parts = []
-        for part in (bad_rows, cross_rows):
-            if not part.empty:
-                audit_parts.append(part.loc[:, ["window_id", "start_time", "end_time", "status"]])
-        audit = pd.concat(audit_parts, ignore_index=True) if audit_parts else pd.DataFrame(
-            columns=["window_id", "start_time", "end_time", "status"]
+        audit = (
+            bad_rows.loc[:, ["window_id", "start_time", "end_time", "status"]].reset_index(drop=True)
+            if not bad_rows.empty
+            else pd.DataFrame(columns=["window_id", "start_time", "end_time", "status"])
         )
-        return frame.sort_values(["utc_day", "start_ms", "window_id"], kind="mergesort"), audit
+        return frame.sort_values(["archive_day", "start_ms", "window_id"], kind="mergesort"), audit
 
-    def _load_one_day(
+    def _load_one_archive_day(
         self,
         *,
-        utc_day: date,
+        archive_day: date,
         day_windows: pd.DataFrame,
         freq: str,
         timeframe_delta: pd.Timedelta,
         chunksize: int,
         allow_download_missing: bool,
     ) -> DailyEventWindowBatch:
-        raw_path = self.tick_loader.find_local_trade_file(utc_day, template=self.trades_url_template)
-        if raw_path is None and allow_download_missing:
-            raw_path = self.tick_loader.download_official_trade_file(utc_day, self.trades_url_template)
-        if raw_path is None:
-            coverage = day_windows.loc[:, ["window_id", "start_time", "end_time"]].copy()
-            coverage["status"] = "missing_raw_day"
-            coverage["raw_utc_day"] = str(utc_day)
-            coverage["raw_trade_rows"] = 0
-            coverage["bar_rows"] = 0
-            return DailyEventWindowBatch(utc_day, pd.DataFrame(columns=BAR_COLUMNS), coverage)
-
         ids = day_windows["window_id"].astype(str).to_numpy()
         starts = day_windows["start_ms"].to_numpy(dtype=np.int64)
         ends = day_windows["end_ms"].to_numpy(dtype=np.int64)
         slices: dict[str, list[pd.DataFrame]] = {window_id: [] for window_id in ids}
         raw_counts = np.zeros(len(ids), dtype=np.int64)
+        raw_min_ts_ms: int | None = None
+        raw_max_ts_ms: int | None = None
 
-        for chunk in self.tick_loader.read_zip(raw_path, chunksize=max(10_000, chunksize), minimal=True):
-            if chunk.empty:
+        required_days_by_id: dict[str, tuple[date, ...]] = {}
+        required_indices_by_day: dict[date, list[int]] = {}
+        for i, row in enumerate(day_windows.itertuples(index=False)):
+            needed = tuple(self._date_range_inclusive(row.archive_day, row.archive_end_day))
+            required_days_by_id[str(row.window_id)] = needed
+            for needed_day in needed:
+                required_indices_by_day.setdefault(needed_day, []).append(i)
+
+        paths_by_day: dict[date, Path] = {}
+        missing_days: set[date] = set()
+        for raw_day in sorted(required_indices_by_day):
+            raw_path = self.tick_loader.find_local_trade_file(raw_day, template=self.trades_url_template)
+            if raw_path is None and allow_download_missing:
+                raw_path = self.tick_loader.download_official_trade_file(raw_day, self.trades_url_template)
+            if raw_path is None:
+                missing_days.add(raw_day)
                 continue
-            ts = chunk["ts_ms"].to_numpy(dtype=np.int64, copy=False)
-            for i, window_id in enumerate(ids):
-                left = int(np.searchsorted(ts, starts[i], side="left"))
-                right = int(np.searchsorted(ts, ends[i], side="left"))
-                if right <= left:
+            paths_by_day[raw_day] = raw_path
+            relevant = np.asarray(required_indices_by_day[raw_day], dtype=np.int64)
+            relevant_starts = starts[relevant]
+            relevant_ends = ends[relevant]
+
+            for chunk in self.tick_loader.read_zip(raw_path, chunksize=max(10_000, chunksize), minimal=True):
+                if chunk.empty:
                     continue
-                part = chunk.iloc[left:right].copy()
-                raw_counts[i] += len(part)
-                slices[window_id].append(part)
+                if not chunk["ts_ms"].is_monotonic_increasing:
+                    chunk = chunk.sort_values("ts_ms", kind="mergesort").reset_index(drop=True)
+                ts = chunk["ts_ms"].to_numpy(dtype=np.int64, copy=False)
+                chunk_min = int(ts[0])
+                chunk_max = int(ts[-1])
+                raw_min_ts_ms = chunk_min if raw_min_ts_ms is None else min(raw_min_ts_ms, chunk_min)
+                raw_max_ts_ms = chunk_max if raw_max_ts_ms is None else max(raw_max_ts_ms, chunk_max)
+                for local_pos, global_i in enumerate(relevant):
+                    left = int(np.searchsorted(ts, relevant_starts[local_pos], side="left"))
+                    right = int(np.searchsorted(ts, relevant_ends[local_pos], side="left"))
+                    if right <= left:
+                        continue
+                    part = chunk.iloc[left:right].copy()
+                    raw_counts[global_i] += len(part)
+                    slices[ids[global_i]].append(part)
 
         bar_parts: list[pd.DataFrame] = []
         coverage_rows: list[dict[str, object]] = []
         meta = day_windows.set_index("window_id", drop=False)
         for i, window_id in enumerate(ids):
             parts = slices[window_id]
+            needed_days = required_days_by_id[window_id]
+            missing_for_window = tuple(day for day in needed_days if day in missing_days)
+            existing_paths = tuple(paths_by_day[day] for day in needed_days if day in paths_by_day)
             if parts:
                 trades = pd.concat(parts, ignore_index=True)
+                if not trades["ts_ms"].is_monotonic_increasing:
+                    trades = trades.sort_values("ts_ms", kind="mergesort").reset_index(drop=True)
                 bars = self._aggregate_window(window_id, trades, freq=freq, timeframe_delta=timeframe_delta)
                 if not bars.empty:
                     bar_parts.append(bars)
                 status = "complete" if raw_counts[i] > 0 else "no_trades_in_window"
                 bar_rows = int(len(bars))
             else:
-                status = "no_trades_in_window"
+                status = "missing_raw_day" if missing_for_window else "no_trades_in_window"
                 bar_rows = 0
             row = meta.loc[window_id]
             coverage_rows.append(
@@ -279,7 +332,17 @@ class OKXEventTradeWindowLoader:
                     "start_time": row["start_time"],
                     "end_time": row["end_time"],
                     "status": status,
-                    "raw_utc_day": str(utc_day),
+                    "raw_utc_day": str(archive_day),  # legacy compatibility
+                    "raw_archive_day": str(archive_day),
+                    "raw_archive_days": "|".join(str(day) for day in needed_days),
+                    "archive_timezone_offset_hours": self.timezone_offset_hours,
+                    "archive_day_span": int(row["archive_day_span"]),
+                    "missing_raw_days": "|".join(str(day) for day in missing_for_window),
+                    "raw_path": "|".join(str(path) for path in existing_paths),
+                    "requested_start_ms": int(starts[i]),
+                    "requested_end_ms": int(ends[i]),
+                    "raw_min_ts_ms": raw_min_ts_ms,
+                    "raw_max_ts_ms": raw_max_ts_ms,
                     "raw_trade_rows": int(raw_counts[i]),
                     "bar_rows": bar_rows,
                 }
@@ -287,7 +350,14 @@ class OKXEventTradeWindowLoader:
 
         bars_out = pd.concat(bar_parts, ignore_index=True) if bar_parts else pd.DataFrame(columns=BAR_COLUMNS)
         coverage = pd.DataFrame(coverage_rows)
-        return DailyEventWindowBatch(utc_day=utc_day, bars=bars_out, coverage=coverage)
+        return DailyEventWindowBatch(archive_day=archive_day, bars=bars_out, coverage=coverage)
+
+    @staticmethod
+    def _date_range_inclusive(start_day: date, end_day: date) -> Iterator[date]:
+        current = start_day
+        while current <= end_day:
+            yield current
+            current += timedelta(days=1)
 
     def _aggregate_window(
         self,

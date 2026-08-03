@@ -7,13 +7,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_feed.okx_event_trade_window_loader import OKXEventTradeWindowLoader
+from src.data_feed.okx_event_trade_window_loader import (
+    OKXEventTradeWindowLoader,
+    datetime_series_to_epoch_ms,
+)
 from src.research_common.post_sweep_micro import (
     PostSweepMicroConfig,
     analyze_event_range_context,
     analyze_micro_window,
     build_attempt_universe,
     causal_audit,
+    validate_micro_data_gate,
 )
 
 
@@ -31,7 +35,7 @@ def test_sparse_event_window_loader_reads_each_window(tmp_path: Path) -> None:
     utc = pd.date_range("2025-01-01 00:00:00", periods=20, freq="1s", tz="UTC")
     trades = pd.DataFrame(
         {
-            "ts": (utc.astype("int64") // 1_000_000).astype("int64"),
+            "ts": ((utc - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta(milliseconds=1)).astype("int64"),
             "px": 100.0 + np.arange(len(utc)) * 0.01,
             "sz": 1.0,
             "side": np.where(np.arange(len(utc)) % 2 == 0, "buy", "sell"),
@@ -54,6 +58,28 @@ def test_sparse_event_window_loader_reads_each_window(tmp_path: Path) -> None:
     assert len(bars.loc[bars["window_id"] == "W1"]) == 6
     assert (bars["available_time"] == bars["timestamp"] + pd.Timedelta(seconds=1)).all()
     assert set(real[0].coverage["status"]) == {"complete"}
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "datetime64[us]", "datetime64[ms]"])
+def test_epoch_ms_conversion_is_independent_of_pandas_datetime_resolution(dtype: str) -> None:
+    values = pd.Series(pd.to_datetime(["2025-01-01 00:00:00.123"])).astype(dtype)
+    actual = datetime_series_to_epoch_ms(values)
+    assert actual.iloc[0] == 1_735_689_600_123
+
+
+def test_prepare_windows_keeps_millisecond_scale_with_microsecond_dtype(tmp_path: Path) -> None:
+    windows = pd.DataFrame(
+        {
+            "window_id": ["W1"],
+            "start_time": pd.Series(pd.to_datetime(["2025-01-01 08:00:02"])).astype("datetime64[us]"),
+            "end_time": pd.Series(pd.to_datetime(["2025-01-01 08:00:08"])).astype("datetime64[us]"),
+        }
+    )
+    loader = OKXEventTradeWindowLoader(data_dir=tmp_path)
+    prepared, audit = loader.prepare_windows(windows)
+    assert audit.empty
+    assert prepared.loc[prepared.index[0], "start_ms"] == 1_735_689_602_000
+    assert prepared.loc[prepared.index[0], "end_ms"] == 1_735_689_608_000
 
 
 def _universe_source() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -212,6 +238,42 @@ def test_micro_triggers_enter_next_second_open_and_audit_passes() -> None:
     assert not (result["status"] == "FAIL").any()
 
 
+def test_micro_data_gate_fails_on_timestamp_alignment_collapse() -> None:
+    universe = pd.DataFrame({"window_id": [f"W{i}" for i in range(10)]})
+    coverage = pd.DataFrame(
+        {
+            "window_id": universe["window_id"],
+            "status": ["no_trades_in_window"] * 10,
+            "requested_start_ms": [1_700_000_000] * 10,
+            "requested_end_ms": [1_700_000_600] * 10,
+            "raw_min_ts_ms": [1_700_000_000_000] * 10,
+            "raw_max_ts_ms": [1_700_086_399_999] * 10,
+        }
+    )
+    with pytest.raises(RuntimeError, match="timestamp unit mismatch"):
+        validate_micro_data_gate(universe, pd.DataFrame(), pd.DataFrame(), coverage)
+
+
+def test_micro_data_gate_passes_when_windows_and_triggers_exist() -> None:
+    universe = pd.DataFrame({"window_id": ["W1", "W2"]})
+    features = pd.DataFrame({"window_id": ["W1"]})
+    triggers = pd.DataFrame({"window_id": ["W1"], "trigger_name": ["FIRST_NEW_LOW"]})
+    coverage = pd.DataFrame(
+        {
+            "window_id": ["W1", "W2"],
+            "status": ["complete", "no_trades_in_window"],
+        }
+    )
+    result = validate_micro_data_gate(
+        universe,
+        features,
+        triggers,
+        coverage,
+        min_checked_windows=10,
+    )
+    assert result["micro_complete_windows"] == 1
+
+
 def test_range_context_uses_completed_end_times() -> None:
     anchor = pd.Timestamp("2025-01-01 12:00:00")
     event = pd.Series(
@@ -291,3 +353,76 @@ def test_direct_binance_oi_context_uses_indexed_store(tmp_path: Path) -> None:
     assert context.loc[0, "oi_base"] == pytest.approx(121.0)
     assert context.loc[0, "oi_base_change_5m"] == pytest.approx(0.1)
     assert bool(context.loc[0, "down_oi_up_flag"])
+
+
+
+def _epoch_ms(index: pd.DatetimeIndex) -> pd.Series:
+    epoch = pd.Timestamp("1970-01-01", tz="UTC")
+    return ((index - epoch) // pd.Timedelta(milliseconds=1)).astype("int64")
+
+
+def test_local_archive_day_mapping_reads_utc_plus8_early_hours(tmp_path: Path) -> None:
+    utc = pd.date_range("2024-12-31 21:00:00", periods=10, freq="1s", tz="UTC")
+    trades = pd.DataFrame(
+        {"ts": _epoch_ms(utc), "px": 100.0 + np.arange(len(utc)) * 0.01, "sz": 1.0, "side": "sell"}
+    )
+    _write_trade_zip(tmp_path, "2025-01-01", trades)
+    windows = pd.DataFrame(
+        {"window_id": ["EARLY"], "start_time": [pd.Timestamp("2025-01-01 05:00:02")], "end_time": [pd.Timestamp("2025-01-01 05:00:08")]}
+    )
+    loader = OKXEventTradeWindowLoader(data_dir=tmp_path)
+    prepared, audit = loader.prepare_windows(windows)
+    assert audit.empty
+    assert prepared.iloc[0]["archive_day"].isoformat() == "2025-01-01"
+    assert prepared.iloc[0]["start_utc"] == pd.Timestamp("2024-12-31 21:00:02")
+    batches = list(loader.iter_daily_window_bars(windows, timeframe="1s", chunksize=5))
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch.archive_day.isoformat() == "2025-01-01"
+    assert len(batch.bars) == 6
+    assert batch.coverage.iloc[0]["status"] == "complete"
+    assert batch.coverage.iloc[0]["raw_archive_day"] == "2025-01-01"
+
+
+def test_cross_local_midnight_window_reads_both_archive_days(tmp_path: Path) -> None:
+    utc_day1 = pd.date_range("2025-01-01 15:59:58", periods=2, freq="1s", tz="UTC")
+    utc_day2 = pd.date_range("2025-01-01 16:00:00", periods=4, freq="1s", tz="UTC")
+    day1 = pd.DataFrame({"ts": _epoch_ms(utc_day1), "px": [100.0, 100.1], "sz": 1.0, "side": "sell"})
+    day2 = pd.DataFrame({"ts": _epoch_ms(utc_day2), "px": [100.2, 100.3, 100.4, 100.5], "sz": 1.0, "side": "buy"})
+    _write_trade_zip(tmp_path, "2025-01-01", day1)
+    _write_trade_zip(tmp_path, "2025-01-02", day2)
+    windows = pd.DataFrame(
+        {"window_id": ["MIDNIGHT"], "start_time": [pd.Timestamp("2025-01-01 23:59:58")], "end_time": [pd.Timestamp("2025-01-02 00:00:04")]}
+    )
+    loader = OKXEventTradeWindowLoader(data_dir=tmp_path)
+    prepared, audit = loader.prepare_windows(windows)
+    assert audit.empty
+    assert prepared.iloc[0]["archive_day_span"] == 2
+    batches = list(loader.iter_daily_window_bars(windows, timeframe="1s", chunksize=2))
+    assert len(batches) == 1
+    batch = batches[0]
+    assert len(batch.bars) == 6
+    coverage = batch.coverage.iloc[0]
+    assert coverage["status"] == "complete"
+    assert coverage["raw_archive_days"] == "2025-01-01|2025-01-02"
+    assert coverage["archive_day_span"] == 2
+    assert coverage["missing_raw_days"] == ""
+
+
+def test_micro_data_gate_detects_fixed_hour_partition_collapse() -> None:
+    early = pd.date_range("2025-01-01 00:00:00", periods=20, freq="1min")
+    daytime = pd.date_range("2025-01-01 08:00:00", periods=20, freq="1min")
+    starts = early.append(daytime)
+    ids = [f"W{i}" for i in range(len(starts))]
+    universe = pd.DataFrame({"window_id": ids})
+    coverage = pd.DataFrame(
+        {"window_id": ids, "start_time": starts, "status": ["no_trades_in_window"] * 20 + ["complete"] * 20, "raw_archive_day": ["2025-01-01"] * 40}
+    )
+    features = pd.DataFrame({"window_id": ids[20:]})
+    triggers = pd.DataFrame({"window_id": ids[20:], "trigger_name": "FIRST_NEW_LOW"})
+    with pytest.raises(RuntimeError, match="all-day 1s data"):
+        validate_micro_data_gate(
+            universe, features, triggers, coverage,
+            max_no_trade_rate=0.99, min_checked_windows=1,
+            max_hour_no_trade_rate=0.10, min_hour_windows=20,
+        )

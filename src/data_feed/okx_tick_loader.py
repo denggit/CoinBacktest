@@ -248,7 +248,11 @@ class OKXTickLoader:
             out = out.loc[ts.notna()].copy()
             ts = ts.loc[out.index]
             out["timestamp"] = ts
-            out["ts_ms"] = (ts.astype("int64") // 1_000_000).astype("int64")
+            # Do not assume pandas stores datetime values in nanoseconds.
+            # pandas 3/4 may preserve datetime64[us], where dividing the raw
+            # integer by 1,000,000 would yield Unix seconds instead of ms.
+            epoch = pd.Timestamp("1970-01-01 00:00:00", tz="UTC")
+            out["ts_ms"] = ((ts - epoch) // pd.Timedelta(milliseconds=1)).astype("int64")
 
         for col in ["trade_id", "price", "size", "side"]:
             if col not in out.columns:

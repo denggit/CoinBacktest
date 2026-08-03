@@ -51,15 +51,17 @@ from src.research_common.post_sweep_micro import (  # noqa: E402
     paired_micro_profile,
     range_pair_overlap_summary,
     range_pair_profile,
+    raw_hourly_coverage_report,
     trigger_occurrence_summary,
     trigger_path_summary,
     trigger_relative_to_baselines,
+    validate_micro_data_gate,
 )
 from src.research_common.progress import ProgressReporter  # noqa: E402
 from src.research_common.review_pack import finalize_research_report  # noqa: E402
 
 SCRIPT_NAME = "06_post_sweep_micro_turning_point_study"
-SCRIPT_VERSION = "1.1.0"
+SCRIPT_VERSION = "1.2.0"
 EXPERIMENT_ID = "ETH_POST_SWEEP_MICRO_TURNING_POINT_R06"
 EDGE_ID = "RESEARCH_ONLY_POST_SWEEP_MICRO_ABSORPTION_ENTRY"
 TITLE = "ETH Post-Sweep 1s / Range-Bar Turning-Point Mechanism Study R06"
@@ -104,6 +106,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--skip-micro", action="store_true")
     p.add_argument("--skip-range", action="store_true")
     p.add_argument("--skip-review-pack", action="store_true")
+    p.add_argument("--micro-max-no-trade-rate", type=float, default=0.02)
+    p.add_argument("--micro-fail-fast-min-windows", type=int, default=10)
+    p.add_argument("--micro-max-hour-no-trade-rate", type=float, default=0.10)
+    p.add_argument("--micro-hour-min-windows", type=int, default=20)
     p.add_argument("--no-progress", action="store_true")
     p.add_argument("--self-test", action="store_true")
     return p.parse_args(argv)
@@ -263,12 +269,12 @@ def run(args: argparse.Namespace) -> Path:
     raw_coverage_parts: list[pd.DataFrame] = []
 
     if not args.skip_micro:
-        print("[stage] stream each required raw UTC day once; extract sparse 1s event windows", flush=True)
+        print("[stage] stream project-local raw archive days; reconstruct cross-midnight 1s event windows", flush=True)
         loader = OKXEventTradeWindowLoader(symbol=args.symbol, data_dir=args.data_dir)
         prepared, _ = loader.prepare_windows(universe[["window_id", "start_time", "end_time"]])
-        total_days = int(prepared["utc_day"].nunique()) if not prepared.empty else 0
+        total_days = int(prepared["archive_day"].nunique()) if not prepared.empty else 0
         reporter = ProgressReporter(
-            label="[micro raw-days]",
+            label="[micro raw-archive-days]",
             total=total_days,
             every=max(1, total_days // 100),
             enabled=not args.no_progress,
@@ -281,7 +287,7 @@ def run(args: argparse.Namespace) -> Path:
             allow_download_missing=bool(args.allow_download_missing_raw),
         ):
             raw_coverage_parts.append(batch.coverage)
-            if batch.utc_day.year == 1970:
+            if batch.archive_day.year == 1970:
                 continue
             done_days += 1
             reporter.update(done_days)
@@ -304,6 +310,18 @@ def run(args: argparse.Namespace) -> Path:
     micro_audit = pd.DataFrame(micro_audit_rows)
     raw_coverage = pd.concat(raw_coverage_parts, ignore_index=True) if raw_coverage_parts else pd.DataFrame()
     print(f"[micro] complete_windows={len(window_features):,} trigger_rows={len(triggers):,}", flush=True)
+    if not args.skip_micro:
+        micro_gate = validate_micro_data_gate(
+            universe,
+            window_features,
+            triggers,
+            raw_coverage,
+            max_no_trade_rate=float(args.micro_max_no_trade_rate),
+            min_checked_windows=int(args.micro_fail_fast_min_windows),
+            max_hour_no_trade_rate=float(args.micro_max_hour_no_trade_rate),
+            min_hour_windows=int(args.micro_hour_min_windows),
+        )
+        print(f"[micro-gate] PASS {micro_gate}", flush=True)
 
     if not args.skip_range:
         print("[stage] causal Range-Bar context in bounded calendar chunks", flush=True)
@@ -329,6 +347,7 @@ def run(args: argparse.Namespace) -> Path:
     print("[stage] summaries, matched differences, candidate scorecard and causal audit", flush=True)
     reports = {
         "01_data_quality.csv": data_quality_report(universe, labels, pair_audit, micro_audit, range_audit, raw_coverage),
+        "01b_raw_hourly_coverage.csv": raw_hourly_coverage_report(raw_coverage),
         "02_attempt_universe_summary.csv": (
             universe.groupby(["period", "cohort"], dropna=False).size().rename("events").reset_index()
         ),
@@ -368,7 +387,9 @@ def run(args: argparse.Namespace) -> Path:
             "Oracle cohort selection uses future labels only for retrospective mechanism comparison.",
             "Causal triggers use closed 1s bars and next-1s-open execution.",
             "ORACLE_LOW_PLUS_1S is an upper-bound label and excluded from the candidate scorecard.",
-            "Raw trades are streamed one UTC day at a time; full multi-year 1s bars are not materialized.",
+            "Raw ZIP filename dates use the project-local calendar (UTC+8 by default); trade rows remain Unix UTC milliseconds.",
+            "Cross-project-midnight windows are reconstructed from adjacent archive files instead of being skipped.",
+            "Raw trades are streamed by bounded archive-day batches; full multi-year 1s bars are not materialized.",
             "Round-trip cost defaults to 0.11%.",
         ],
     }

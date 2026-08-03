@@ -253,7 +253,31 @@ class OKXRangeFootprintLoader:
             )
         return {"footprints_written": footprints_written, "bars_closed": bars_closed, "chunks_read": chunks_read, "days": len(days)}
 
-    def load_local_data(self, start_date: Any | None = None, end_date: Any | None = None, bar_ids: Sequence[int] | None = None) -> pd.DataFrame:
+    def load_local_data(
+        self,
+        start_date: Any | None = None,
+        end_date: Any | None = None,
+        bar_ids: Sequence[int] | None = None,
+        *,
+        bar_id_min: int | None = None,
+        bar_id_max: int | None = None,
+        columns: Sequence[str] | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> pd.DataFrame:
+        """Load cached footprint rows with optional column and bar-id pruning.
+
+        Research jobs should request only the fields they need and prefer a
+        contiguous ``bar_id_min``/``bar_id_max`` interval over thousands of
+        individual ``IN`` parameters.  The default remains fully backward
+        compatible with the original all-column loader.
+        """
+
+        selected_columns = list(self.BASE_COLUMNS if columns is None else columns)
+        unknown = sorted(set(selected_columns) - set(self.BASE_COLUMNS))
+        if unknown:
+            raise ValueError(f"unknown range-footprint columns: {unknown}")
+        if not selected_columns:
+            raise ValueError("columns must not be empty")
         where: list[str] = []
         params: list[Any] = []
         if start_date is not None:
@@ -262,21 +286,59 @@ class OKXRangeFootprintLoader:
         if end_date is not None:
             where.append("start_ts <= ?")
             params.append(timestamp_to_db_text(end_date))
+        if bar_id_min is not None:
+            where.append("bar_id >= ?")
+            params.append(int(bar_id_min))
+        if bar_id_max is not None:
+            where.append("bar_id <= ?")
+            params.append(int(bar_id_max))
         if bar_ids:
-            placeholders = ",".join(["?"] * len(bar_ids))
+            ids = [int(x) for x in bar_ids]
+            if len(ids) > 900:
+                raise ValueError(
+                    "bar_ids exceeds the safe SQLite parameter limit; use "
+                    "bar_id_min/bar_id_max or split the request"
+                )
+            placeholders = ",".join(["?"] * len(ids))
             where.append(f"bar_id IN ({placeholders})")
-            params.extend([int(x) for x in bar_ids])
-        sql = f"SELECT {', '.join(self.BASE_COLUMNS)} FROM {self.table_name}"
+            params.extend(ids)
+        sql = f"SELECT {', '.join(selected_columns)} FROM {self.table_name}"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY bar_id, price_bucket"
-        with self._get_db_connection() as conn:
-            try:
-                df = pd.read_sql_query(sql, conn, params=params, parse_dates=["start_ts", "end_ts"])
-            except Exception as exc:
-                logger.warning("读取 range footprint DB 失败 table=%s error=%s", self.table_name, exc)
-                return pd.DataFrame(columns=self.BASE_COLUMNS)
-        return self._finalize_return_df(df)
+        owns_connection = connection is None
+        conn = self._get_db_connection() if owns_connection else connection
+        try:
+            parse_dates = [name for name in ("start_ts", "end_ts") if name in selected_columns]
+            df = pd.read_sql_query(sql, conn, params=params, parse_dates=parse_dates)
+        except Exception as exc:
+            logger.warning("读取 range footprint DB 失败 table=%s error=%s", self.table_name, exc)
+            return pd.DataFrame(columns=selected_columns)
+        finally:
+            if owns_connection:
+                conn.close()
+        return self._finalize_selected_return_df(df, selected_columns)
+
+    def _finalize_selected_return_df(
+        self, df: pd.DataFrame, selected_columns: Sequence[str]
+    ) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=list(selected_columns))
+        out = df.copy()
+        for col in ("start_ts", "end_ts"):
+            if col in out.columns:
+                out[col] = pd.to_datetime(out[col], errors="coerce")
+        if "bar_id" in out.columns:
+            out["bar_id"] = pd.to_numeric(out["bar_id"], errors="coerce").fillna(0).astype("int64")
+        for col in set(selected_columns).intersection(self.NUMERIC_COLUMNS):
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        required_times = [name for name in ("start_ts", "end_ts") if name in out.columns]
+        if required_times:
+            out = out.dropna(subset=required_times)
+        sort_columns = [name for name in ("bar_id", "price_bucket") if name in out.columns]
+        if sort_columns:
+            out = out.sort_values(sort_columns, kind="mergesort")
+        return out[list(selected_columns)]
 
     def delete_cache(self) -> None:
         with self._get_db_connection() as conn:

@@ -14,9 +14,11 @@ from .reports import (
     paired_micro_profile,
     range_pair_overlap_summary,
     range_pair_profile,
+    raw_hourly_coverage_report,
     trigger_occurrence_summary,
     trigger_path_summary,
     trigger_relative_to_baselines,
+    validate_micro_data_gate,
 )
 from .universe import (
     attach_optional_oi_context,
@@ -32,6 +34,7 @@ __all__ = [
     "candidate_scorecard", "causal_audit", "cohort_low_feature_summary",
     "data_quality_report", "extract_range_context", "load_binance_oi_context", "load_optional_r05_oi",
     "load_r04_micro_source", "paired_micro_profile", "range_pair_overlap_summary", "range_pair_profile",
+    "raw_hourly_coverage_report",
     "regularize_window", "trigger_occurrence_summary", "trigger_path_summary",
-    "trigger_relative_to_baselines",
+    "trigger_relative_to_baselines", "validate_micro_data_gate",
 ]
