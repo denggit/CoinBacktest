@@ -1,0 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""R02.3.1b source adapter preserving R02.3 quarantine semantics."""
+from __future__ import annotations
+
+import pandas as pd
+
+from src.ai_research.latent_liquidity_excess_ranking.source import load_r02_2_exact_first_touch_dataset
+
+
+def load_source() -> tuple[pd.DataFrame, pd.DataFrame]:
+    frame, gate = load_r02_2_exact_first_touch_dataset()
+    frame = frame.copy()
+    frame["r02_3_1b_upstream_eligible"] = frame["r02_3_source_eligible"].astype(bool)
+    return frame, gate
