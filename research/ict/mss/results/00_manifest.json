@@ -1,0 +1,99 @@
+{
+  "title": "ETH 1m Multi-timeframe Liquidity Sweep, MSS and FVG Limit Study",
+  "script": "research\\ict\\mss\\01_multiframe_sweep_mss_fvg_research.py",
+  "script_version": "1.0.0",
+  "symbol": "ETH-USDT-SWAP",
+  "data_interface": "src.data_feed.okx_trade_bar_loader.OKXTradeBarLoader.fetch_data_by_date_range",
+  "ohlc_only": true,
+  "requested_window": [
+    "2022-01-01",
+    "2026-12-31 23:59:00"
+  ],
+  "actual_window": [
+    "2022-01-01 00:00:00",
+    "2026-07-31 23:59:00"
+  ],
+  "research_window": [
+    "2023-01-01",
+    "2026-07-31 23:59:00"
+  ],
+  "warmup_window": [
+    "2022-01-01",
+    "2022-12-31 23:59:00"
+  ],
+  "timeframes": [
+    [
+      "15m",
+      15
+    ],
+    [
+      "30m",
+      30
+    ],
+    [
+      "1h",
+      60
+    ],
+    [
+      "4h",
+      240
+    ]
+  ],
+  "variants": [
+    {
+      "name": "V1_balanced",
+      "macro_width": 2,
+      "micro_width": 3,
+      "displacement_atr": 1.25
+    },
+    {
+      "name": "V2_clearer_macro",
+      "macro_width": 3,
+      "micro_width": 3,
+      "displacement_atr": 1.25
+    },
+    {
+      "name": "V3_clearer_micro",
+      "macro_width": 2,
+      "micro_width": 5,
+      "displacement_atr": 1.5
+    },
+    {
+      "name": "V4_strict",
+      "macro_width": 3,
+      "micro_width": 5,
+      "displacement_atr": 1.5
+    }
+  ],
+  "mss_max_delay_minutes": 60,
+  "expiries": [
+    30,
+    60,
+    180
+  ],
+  "target_rs": [
+    1.0,
+    1.5,
+    2.0
+  ],
+  "hold_minutes": 360,
+  "round_trip_costs": [
+    0.0011,
+    0.0015,
+    0.002
+  ],
+  "primary": {
+    "expiry_minutes": 60,
+    "target_r": 1.5,
+    "cost": 0.0015
+  },
+  "selected_variant_from_2023": "V4_strict",
+  "edge_gate_passed": false,
+  "candidate_count": 18841,
+  "filled_first_touch_count": 18006,
+  "notes": [
+    "No data interface was written or accessed directly; all OHLC rows came from OKXTradeBarLoader.",
+    "Macro pivots are calculated offline only to determine the timestamp at which they become observable; the scanner activates them no earlier than that timestamp.",
+    "Same-bar target/stop intersections are assigned to stop first."
+  ]
+}
