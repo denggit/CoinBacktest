@@ -1,0 +1,16 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "model": "frozen shallow histogram gradient boosting direction and absolute-return models",
+  "complexity": {
+    "max_leaf_nodes": 7,
+    "min_samples_leaf": 100,
+    "max_iter": 100,
+    "learning_rate": 0.03,
+    "l2": 10.0
+  },
+  "training": "trailing 730 days, monthly, purged 12H labels",
+  "execution": "1m main and 2m delay stress",
+  "expected_return_gate": 0.0015,
+  "one_way_cost": 0.0005,
+  "strategy_gross_cap": 0.75
+}

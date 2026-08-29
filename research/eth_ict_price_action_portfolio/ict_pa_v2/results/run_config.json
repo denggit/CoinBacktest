@@ -1,0 +1,26 @@
+{
+  "price_start": "2020-01-01 00:00:00",
+  "price_end": "2026-08-15 23:45:00",
+  "price_rows_15m": 232224,
+  "trade_start": "2022-01-01 00:00:00",
+  "trade_end": "2026-07-13 23:45:00",
+  "trade_rows_15m": 158806,
+  "one_way_cost": 0.0005,
+  "round_trip_cost": 0.001,
+  "exchange_leverage_cap": 15.0,
+  "strategy_gross_cap": 0.95,
+  "daily_signal_availability": "completed day D -> D+1 natural-day open",
+  "micro_signal_availability": "completed 4H candle -> next 15m open",
+  "selection_rule": "equal weight across all predeclared mechanisms; no winner selection",
+  "micro_events": {
+    "absorption_long_event": 192,
+    "absorption_short_event": 320,
+    "breakout_long_event": 2720,
+    "breakout_short_event": 2112,
+    "flow_reversal_long_event": 2016,
+    "flow_reversal_short_event": 1536,
+    "failed_sweep_long_event": 2384,
+    "failed_sweep_short_event": 2976
+  },
+  "core_rows": 2419
+}

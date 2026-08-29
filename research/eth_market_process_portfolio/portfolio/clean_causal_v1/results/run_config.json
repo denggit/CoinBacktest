@@ -1,0 +1,57 @@
+{
+  "config": {
+    "symbol": "ETH-USDT-SWAP",
+    "start": "2022-01-01 00:00:00",
+    "end": "2026-08-15 23:59:59",
+    "momentum_days": [
+      7,
+      30,
+      90
+    ],
+    "volatility_days": 30,
+    "target_annual_volatility": 0.12,
+    "strategy_notional_cap": 1.5,
+    "exchange_leverage_cap": 15.0,
+    "one_way_cost": 0.0005,
+    "annual_carry_drag": 0.05,
+    "rebalance_bars": 6,
+    "execution_delay_bars": 0,
+    "maintenance_margin_rate": 0.005,
+    "drawdown_half_speed": -0.1,
+    "drawdown_quarter_speed": -0.15
+  },
+  "warmup_start": "2021-08-04 00:00:00",
+  "neighbourhoods": [
+    {
+      "name": "faster_5_20_60",
+      "momentum_days": [
+        5,
+        20,
+        60
+      ]
+    },
+    {
+      "name": "frozen_7_30_90",
+      "momentum_days": [
+        7,
+        30,
+        90
+      ]
+    },
+    {
+      "name": "slower_10_40_120",
+      "momentum_days": [
+        10,
+        40,
+        120
+      ]
+    }
+  ],
+  "top_day_removal": {
+    "removed_best_days": 10,
+    "remaining_total_return": -0.16107841732014605,
+    "original_total_return": 0.048161810497093116,
+    "largest_removed_day": 0.03174777064420309
+  },
+  "decision": "paper_trade_only"
+}

@@ -1,0 +1,88 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "ETH ICT-Macro / PA-Microstructure Portfolio — 2022–2026",
+    "description": "Causal hedge-mode ETH portfolio research ranked by natural-day flat and loss streaks, drawdown, CAGR, and total return.",
+    "generatedAt": "2026-08-17T14:30:00+08:00",
+    "cards": [
+      {"id": "flat_days", "description": "Longest run of natural days with zero gross exposure for every 15-minute interval.", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "metrics": [{"label": "Max consecutive flat days", "field": "max_consecutive_flat_days", "format": "number"}]},
+      {"id": "loss_days", "description": "Longest run of natural days whose compounded account return was negative.", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "metrics": [{"label": "Max consecutive losing days", "field": "max_consecutive_losing_days", "format": "number"}]},
+      {"id": "max_dd", "description": "Worst peak-to-trough marked-account decline.", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "metrics": [{"label": "Max drawdown", "field": "max_drawdown_abs", "format": "percent"}]},
+      {"id": "cagr", "description": "Annualized compounded return after fees and conservative carry.", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "metrics": [{"label": "CAGR", "field": "cagr", "format": "percent", "signed": true}]},
+      {"id": "total_return", "description": "Compounded account return for 2022-01-01 through 2026-08-15.", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "metrics": [{"label": "Total return", "field": "total_return", "format": "percent", "signed": true}]}
+    ],
+    "charts": [
+      {"id": "equity_curve", "title": "Quarter-end account equity", "subtitle": "2022 through August 15, 2026; starts at 1.0 after open/close fees and carry", "type": "line", "dataset": "equity_quarterly", "sourceId": "eth_ohlcv_sqlite", "encodings": {"x": {"field": "date", "type": "temporal", "label": "Date"}, "y": {"field": "equity", "type": "quantitative", "label": "Equity multiple"}}, "yAxisTitle": "Equity multiple", "valueFormat": "number", "layout": "full"},
+      {"id": "yearly_return", "title": "Calendar-year account returns", "subtitle": "2026 is partial through August 15; fees and carry included", "type": "bar", "dataset": "yearly", "sourceId": "eth_ohlcv_sqlite", "encodings": {"x": {"field": "period", "type": "ordinal", "label": "Year"}, "y": {"field": "return", "type": "quantitative", "label": "Return", "format": "percent"}}, "yAxisTitle": "Return", "valueFormat": "percent", "layout": "full"}
+    ],
+    "tables": [
+      {"id": "priority_table", "title": "User-priority capability scorecard", "dataset": "priority", "sourceId": "eth_ohlcv_sqlite", "columns": [
+        {"field": "candidate", "label": "Candidate", "type": "text"},
+        {"field": "max_consecutive_flat_days", "label": "Max flat days", "format": "number"},
+        {"field": "max_consecutive_losing_days", "label": "Max losing days", "format": "number"},
+        {"field": "max_drawdown_abs", "label": "Max drawdown", "format": "percent"},
+        {"field": "cagr", "label": "CAGR", "format": "percent", "movement": true},
+        {"field": "total_return", "label": "Total return", "format": "percent", "movement": true},
+        {"field": "calmar", "label": "Calmar", "format": "number"},
+        {"field": "passes_cagr_ge_drawdown", "label": "CAGR ≥ drawdown", "type": "text"}
+      ]},
+      {"id": "scenario_table", "title": "Frozen cost and execution stresses", "dataset": "scenarios", "sourceId": "eth_ohlcv_sqlite", "columns": [
+        {"field": "scenario", "label": "Scenario", "type": "text"},
+        {"field": "total_return", "label": "Total return", "format": "percent", "movement": true},
+        {"field": "cagr", "label": "CAGR", "format": "percent", "movement": true},
+        {"field": "max_drawdown", "label": "Max drawdown", "format": "percent", "movement": true},
+        {"field": "calmar", "label": "Calmar", "format": "number"},
+        {"field": "max_gross_exposure", "label": "Max gross exposure", "format": "number"},
+        {"field": "liquidation_events", "label": "Liquidations", "format": "number"}
+      ]},
+      {"id": "data_quality_table", "title": "Input-data quality gate", "dataset": "data_quality", "sourceId": "eth_ohlcv_sqlite", "columns": [
+        {"field": "dataset", "label": "Dataset", "type": "text"},
+        {"field": "rows", "label": "Rows", "format": "number"},
+        {"field": "start", "label": "Start", "type": "text"},
+        {"field": "end", "label": "End", "type": "text"},
+        {"field": "missing_timestamps", "label": "Missing", "format": "number"},
+        {"field": "duplicate_timestamps", "label": "Duplicates", "format": "number"},
+        {"field": "invalid_ohlc_rows", "label": "Invalid OHLC", "format": "number"},
+        {"field": "ready", "label": "Ready", "type": "text"}
+      ]}
+    ],
+    "sources": [
+      {"id": "eth_ohlcv_sqlite", "label": "Local OKX ETH-USDT-SWAP 1m OHLCV", "path": "data/crypto_history.db", "query": {"engine": "sqlite", "language": "sql", "description": "Closed local 1m candles causally aggregated to daily, 4H, and 15m.", "sql": "SELECT timestamp, open, high, low, close, volume FROM ETH_USDT_SWAP_1m WHERE timestamp >= '2020-01-01 00:00:00' AND timestamp <= '2026-08-15 23:59:59' ORDER BY timestamp", "tables_used": ["ETH_USDT_SWAP_1m"], "filters": ["Evaluation starts 2022-01-01", "2020-2021 is warmup only", "No missing evaluation minutes"], "metric_definitions": ["Flat day means every 15m interval in the natural day has zero gross exposure", "Losing day means compounded account return for the natural day is below zero", "Signals use completed candles and execute next 15m open or later", "Opening and closing each cost 0.05% of changed sleeve notional"]}}
+    ],
+    "blocks": [
+      {"id": "title", "type": "markdown", "body": "# ETH ICT-Macro / PA-Microstructure Portfolio — 2022–2026"},
+      {"id": "technical_summary", "type": "markdown", "sourceId": "eth_ohlcv_sqlite", "body": "## 技术摘要\n\n- **最终候选不批准实盘。** 它实现连续自然日空仓 0 天、最长连续亏损 9 天、历史清算 0 次，但 CAGR 仅 1.93%，最大回撤 16.18%，Calmar 0.119，未达到用户偏好的 CAGR ≥ 最大回撤。\n- **基础总收益为 9.23%。** 开仓和平仓各计 0.05%；手续费翻倍、额外延迟 15 分钟和年化 5% carry 后仍保持正收益，但经济边际很薄。\n- **模型是 ICT 宏观语境 + PA 微观结构执行。** 2/3 日线确认 BOS 与 1/3 十二个月方向状态组成连续长持仓核心；4H 外部流动性扫荡后，必须等待 15m MSS、位移、收盘效率和历史成交量确认，下一根 15m 开盘成交。\n- **结论状态：`PAPER_TRADE_ONLY / NO_LIVE_EDGE_APPROVED`。** 删除最佳 10 天后总收益为 -12.75%，且 2023、2025 为负，不符合持续稳定增长账户的要求。"},
+      {"id": "headline", "type": "metric-strip", "cardIds": ["flat_days", "loss_days", "max_dd", "cagr", "total_return"]},
+      {"id": "priority_finding", "type": "markdown", "sourceId": "eth_ohlcv_sqlite", "body": "## 日级优先级达标，但收益/回撤比例不达标\n\n空仓和亏损串均按自然日计算。连续持仓核心确保研究期内没有整日空仓；最长连续亏损为 9 天。按照用户排序，这个双向候选优于会产生 59 天连续空仓的日周共识版本，也优于最长连续亏损 10 天的独立双向战术版本。然而第三项之后暴露出主要问题：16.18% 回撤对应的 CAGR 只有 1.93%。"},
+      {"id": "priority", "type": "table", "tableId": "priority_table", "layout": "full"},
+      {"id": "equity_finding", "type": "markdown", "sourceId": "eth_ohlcv_sqlite", "body": "## 资金曲线没有形成持续、平滑的增长\n\n资金曲线在 2022 年上升后，于 2023 年进入长期回撤，直到 2026 年仍未形成足够强的复利斜率。图中季度端点用于展示长期形态；精确日级账户数据保存在 `daily_equity.csv`。"},
+      {"id": "equity", "type": "chart", "chartId": "equity_curve", "layout": "full"},
+      {"id": "yearly_finding", "type": "markdown", "sourceId": "eth_ohlcv_sqlite", "body": "## 负收益年份阻止模型通过稳定性门槛\n\n2022 年收益 11.37%，2023 年 -8.53%，2024 年 2.46%，2025 年 -0.66%，2026 年截至 8 月 15 日为 5.34%。正负交替说明这不是暴涨暴跌模型，但也不是持续稳定增长模型。"},
+      {"id": "yearly", "type": "chart", "chartId": "yearly_return", "layout": "full"},
+      {"id": "stress_finding", "type": "markdown", "sourceId": "eth_ohlcv_sqlite", "body": "## 压力测试证明会计稳健，却没有证明实盘边际\n\n手续费翻倍后总收益 8.45%，额外 15 分钟延迟后 7.98%，年化 carry 5% 后 9.03%；所有情景历史清算为 0。压力结果没有崩溃，说明时序和成本会计不是收益来源，但低 CAGR 和高收益集中度仍然否决实盘。"},
+      {"id": "scenarios", "type": "table", "tableId": "scenario_table", "layout": "full"},
+      {"id": "architecture", "type": "markdown", "body": "## 模型架构与双向会计\n\nICT 只定义宏观结构、BOS 和 4H 外部流动性；15m Price Action / 价格路径微观结构决定实际执行。核心为方向状态模型，战术袖套只允许与核心反向，因此可在长线看多时短线做空。历史 8.55% 的 15m 区间同时持有多空。策略总名义敞口硬上限 1×，实际最高 0.60×；15× 只是交易所配置上限。收益按净敞口计算，手续费、carry 和维持保证金按双边总敞口计算。"},
+      {"id": "causality", "type": "markdown", "body": "## 无未来函数与反过拟合边界\n\nPivot 必须等待右侧确认 K 线收盘；日线和 4H 状态在周期结束后才对齐到 15m；所有成交最早发生在信号后的下一根 15m 开盘；成交量基准显式滞后。没有参数优化器，标准模型族只用于否证。不过本轮研究过程中完整历史可见，所以 2026 只能称为 holdout-like，不能宣称严格未触碰 OOS。"},
+      {"id": "data_quality", "type": "table", "tableId": "data_quality_table", "layout": "full"},
+      {"id": "decision", "type": "markdown", "body": "## 实盘决定与下一步\n\n当前只允许纸面前向验证 8–12 周。实盘批准至少需要：前向 Calmar ≥ 1；真实成交后最大连续亏损不恶化；成本/延迟压力仍为正；收益不再依赖少数最佳日；真实 funding、标记价格和维持保证金规则通过对账。在此之前，不使用 15× 实际敞口，不以历史零清算承诺未来绝不爆仓。"}
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-17T14:30:00+08:00",
+    "status": "ready",
+    "datasets": {
+      "priority": [{"candidate":"daily_12m_blend_counter_hedge","max_consecutive_flat_days":0,"total_flat_days":0,"max_consecutive_losing_days":9,"total_losing_days":871,"max_drawdown_abs":0.1617835811,"cagr":0.0192899583,"total_return":0.0923139828,"calmar":0.1192331022,"passes_cagr_ge_drawdown":false,"dual_sleeve_eligible":true}],
+      "equity_quarterly": [{"date":"2022-01-01","equity":1.0252593325,"drawdown":-0.0066177014,"max_gross_exposure":0.1689430696},{"date":"2022-04-01","equity":1.1409030075,"drawdown":-0.0213743444,"max_gross_exposure":0.0270080484},{"date":"2022-07-01","equity":1.1318831666,"drawdown":-0.0291112403,"max_gross_exposure":0.2470723670},{"date":"2022-10-01","equity":1.1137127590,"drawdown":-0.0579283307,"max_gross_exposure":0.2252640579},{"date":"2023-01-01","equity":1.0520236812,"drawdown":-0.1101101272,"max_gross_exposure":0.0226805283},{"date":"2023-04-01","equity":1.0294202534,"drawdown":-0.1292300024,"max_gross_exposure":0.1097993737},{"date":"2023-07-01","equity":0.9976700552,"drawdown":-0.1560869832,"max_gross_exposure":0.0895821195},{"date":"2023-10-01","equity":1.0187620473,"drawdown":-0.1382456071,"max_gross_exposure":0.1199975116},{"date":"2024-01-01","equity":1.0504566719,"drawdown":-0.1114356351,"max_gross_exposure":0.0874292477},{"date":"2024-04-01","equity":1.0413883433,"drawdown":-0.1191063881,"max_gross_exposure":0.0335271953},{"date":"2024-07-01","equity":1.0277681385,"drawdown":-0.1306274997,"max_gross_exposure":0.0924231344},{"date":"2024-10-01","equity":1.0438353961,"drawdown":-0.1170364655,"max_gross_exposure":0.0252837106},{"date":"2025-01-01","equity":1.0517942963,"drawdown":-0.1103041601,"max_gross_exposure":0.1218654939},{"date":"2025-04-01","equity":1.0812063762,"drawdown":-0.0854249559,"max_gross_exposure":0.1375968392},{"date":"2025-07-01","equity":1.0902734346,"drawdown":-0.0777552774,"max_gross_exposure":0.0723642574},{"date":"2025-10-01","equity":1.0369274289,"drawdown":-0.1228798037,"max_gross_exposure":0.1399532850},{"date":"2026-01-01","equity":1.0531587461,"drawdown":-0.1091499940,"max_gross_exposure":0.0834371366},{"date":"2026-04-01","equity":1.0951464897,"drawdown":-0.0736332387,"max_gross_exposure":0.1420303854},{"date":"2026-07-01","equity":1.0923139828,"drawdown":-0.0760292106,"max_gross_exposure":0.1100140314}],
+      "yearly": [{"period":"2022","return":0.1137127590},{"period":"2023","return":-0.0852560150},{"period":"2024","return":0.0246115851},{"period":"2025","return":-0.0066178703},{"period":"2026","return":0.0534141082}],
+      "scenarios": [{"scenario":"base","total_return":0.0923139828,"cagr":0.0192899583,"max_drawdown":-0.1617835811,"calmar":0.1192331022,"positive_month_rate":0.4642857143,"max_gross_exposure":0.6,"hedged_bar_rate":0.08552457,"liquidation_events":0},{"scenario":"cost_2x","total_return":0.0844548651,"cagr":0.0176985742,"max_drawdown":-0.1636313842,"calmar":0.1081612448,"positive_month_rate":0.4821428571,"max_gross_exposure":0.6,"hedged_bar_rate":0.08552457,"liquidation_events":0},{"scenario":"delay_plus_15m","total_return":0.0798451733,"cagr":0.0167609534,"max_drawdown":-0.1612932006,"calmar":0.1039160567,"positive_month_rate":0.4464285714,"max_gross_exposure":0.6,"hedged_bar_rate":0.0862280696,"liquidation_events":0},{"scenario":"carry_5pct","total_return":0.0903028302,"cagr":0.0188835786,"max_drawdown":-0.1623259752,"calmar":0.1163312194,"positive_month_rate":0.4821428571,"max_gross_exposure":0.6,"hedged_bar_rate":0.08552457,"liquidation_events":0},{"scenario":"gross_cap_075","total_return":0.0926867803,"cagr":0.0193652224,"max_drawdown":-0.1613103999,"calmar":0.1200494355,"positive_month_rate":0.4642857143,"max_gross_exposure":0.5,"hedged_bar_rate":0.08552457,"liquidation_events":0}],
+      "data_quality": [{"dataset":"ETH-USDT-SWAP local 1m OHLCV","start":"2022-01-01 00:00:00","end":"2026-08-15 23:59:00","rows":2430720,"missing_timestamps":0,"duplicate_timestamps":0,"invalid_ohlc_rows":0,"ready":true},{"dataset":"causal 15m aggregate","start":"2020-01-01 00:00:00","end":"2026-08-15 23:45:00","rows":232224,"missing_timestamps":0,"duplicate_timestamps":0,"invalid_ohlc_rows":0,"ready":true}]
+    }
+  },
+  "sources": [
+    {"id": "eth_ohlcv_sqlite", "label": "Local OKX ETH-USDT-SWAP 1m OHLCV", "path": "data/crypto_history.db", "query": {"engine": "sqlite", "language": "sql", "description": "Closed local 1m candles causally aggregated to daily, 4H, and 15m.", "sql": "SELECT timestamp, open, high, low, close, volume FROM ETH_USDT_SWAP_1m WHERE timestamp >= '2020-01-01 00:00:00' AND timestamp <= '2026-08-15 23:59:59' ORDER BY timestamp", "tables_used": ["ETH_USDT_SWAP_1m"], "filters": ["Evaluation starts 2022-01-01", "2020-2021 is warmup only", "No missing evaluation minutes"], "metric_definitions": ["Flat day means every 15m interval in the natural day has zero gross exposure", "Losing day means compounded account return for the natural day is below zero", "Signals use completed candles and execute next 15m open or later", "Opening and closing each cost 0.05% of changed sleeve notional"]}}
+  ],
+  "package_info": {"root": "research/eth_ict_price_action_portfolio/ict_pa_v1/results", "manifestPath": "artifact.json", "snapshotPath": "artifact.json"}
+}

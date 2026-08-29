@@ -1,0 +1,3 @@
+rows,start,end,duplicate_timestamps,non_monotonic_index,null_numeric_cells,invalid_ohlc_rows,negative_volume_rows,expected_timestamps,missing_timestamps,missing_timestamp_rate,ready,grain,incomplete_source_bars
+2430720,2022-01-01 00:00:00,2026-08-15 23:59:00,0,False,0,0,0,2430720,0,0.0,True,1m source,
+10128,2022-01-01 00:00:00,2026-08-15 20:00:00,0,False,0,0,0,10128,0,0.0,True,4H research,0.0

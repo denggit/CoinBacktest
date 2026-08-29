@@ -1,0 +1,2 @@
+historical_liquidation_events,minimum_historical_maintenance_headroom,minimum_equity_ratio_after_instant_50pct_down,minimum_equity_ratio_after_instant_50pct_up,maximum_gross_exposure,exchange_max_leverage,strategy_hard_gross_cap,maintenance_margin_rate
+0,0.9579398017534607,0.786931832190261,0.8045380840153636,0.42613633561947817,15.0,0.95,0.005

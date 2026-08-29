@@ -1,0 +1,20 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "architecture": "three independent daily-close Price Action break-of-structure state sleeves",
+  "horizons_days": [
+    7,
+    28,
+    91
+  ],
+  "state_rule": "long after close > prior completed range high; short after close < prior completed range low; otherwise retain state",
+  "sleeve_weights": "equal gross budget",
+  "volatility_lookback_days": 30,
+  "target_annual_volatility": 0.1,
+  "gross_cap": 0.6,
+  "exchange_max_leverage": 15.0,
+  "execution": "completed daily bar available at next midnight; enter/rebalance at +1m; +2m stress",
+  "one_way_cost": 0.0005,
+  "double_cost_stress": 0.001,
+  "parameter_search": "none",
+  "hedge_mode": "independent horizons may hold opposing signs simultaneously"
+}

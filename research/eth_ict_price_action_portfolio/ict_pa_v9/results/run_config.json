@@ -1,0 +1,11 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "feature_availability": "completed daily price and OKX trade-flow bar, positionally shifted to D+1",
+  "target": "next 7D return from D+1m open",
+  "model": "fixed standardized Ridge(alpha=10), trailing 730D, monthly refit, 7D label purge",
+  "execution": "1m main, 2m delay stress",
+  "entry_gate": 0.0015,
+  "one_way_cost": 0.0005,
+  "size": 0.3,
+  "gross_cap": 0.75
+}

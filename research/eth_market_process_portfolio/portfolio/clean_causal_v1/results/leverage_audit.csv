@@ -1,0 +1,2 @@
+exchange_leverage_cap,strategy_notional_cap,observed_max_net_exposure,observed_max_gross_exposure,long_short_overlap_rate,max_initial_margin_fraction_at_15x,maintenance_margin_rate_assumption,min_observed_maintenance_headroom,observed_liquidation_events,decision
+15.0,1.5,0.3458327273962839,0.3458327273962839,0.5753925150587538,0.02305551515975226,0.005,0.9775177409063848,0,paper_trade_only

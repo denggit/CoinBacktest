@@ -1,0 +1,17 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "feature_availability": "completed 1H features shifted to bar-end; incomplete hours dropped",
+  "decision_horizon": "12H, non-overlapping, 00:00 and 12:00 local loader time",
+  "execution": "available time +1m; +2m fixed delay stress",
+  "model": "L2 logistic direction AND Ridge expected-return confirmation",
+  "training": "trailing 730 days, monthly retrain, test-boundary label purge, training-only 1/99% target winsorization",
+  "probability_gates": {
+    "long": 0.55,
+    "short": 0.45
+  },
+  "expected_return_gate": 0.0015,
+  "round_trip_cost": 0.001,
+  "tactical_size": 0.2,
+  "strategy_gross_cap": 0.75,
+  "exchange_leverage_cap": 15.0
+}

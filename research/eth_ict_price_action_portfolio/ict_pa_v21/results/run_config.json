@@ -1,0 +1,12 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual 1m K-lines and 15m trade bars only",
+  "mechanism": "4H range displacement continuation with same-sign OKX taker delta",
+  "range_gate": "rolling prior 180D 95th percentile",
+  "close_location_gate": 0.8,
+  "invalidation": "50% displacement retracement",
+  "reward_risk": 2.0,
+  "max_hold": "12H",
+  "execution": "complete 4H bar +1m; +2m stress",
+  "one_way_cost": 0.0005,
+  "parameter_search": "none"
+}

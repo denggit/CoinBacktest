@@ -1,0 +1,4 @@
+dataset,start,end,rows
+OKX ETH-USDT-SWAP 1m K-lines,2020-01-01,2026-08-15 23:59:00,3483360
+complete daily bars,2020-01-02,2026-08-16 00:00:00,2419
+reclaim events,2020-02-04,2026-07-28 00:00:00,238

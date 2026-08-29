@@ -1,0 +1,12 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "event": "15m sweep of prior 24H high/low, close reclaim, opposing taker flow absorption",
+  "availability": "15m bar end",
+  "execution": "bar end +1m; +2m delay stress",
+  "risk_per_trade": 0.005,
+  "notional_cap_per_side": 0.3,
+  "reward_risk": 2.0,
+  "max_hold": "12H",
+  "one_way_cost": 0.0005,
+  "portfolio_gross_cap": 0.75
+}

@@ -1,0 +1,4 @@
+dataset,start,end,rows,duplicate_timestamps
+OKX 1m K-lines,2020-01-01 00:00:00,2026-08-15 23:59:00,2430720,0
+OKX 1m trade bars,2022-01-01 00:00:00,2026-08-15 23:59:00,2429183,0
+OKX extreme 10s trade bars,2022-01-01 00:01:50,2026-07-03 23:59:10,940268,0

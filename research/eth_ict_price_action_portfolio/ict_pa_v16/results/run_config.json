@@ -1,0 +1,14 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "mechanism": "completed daily sweep of prior 20-day range followed by close reclaim",
+  "liquidity_lookback_days": 20,
+  "execution": "daily bar available next midnight; +1m baseline; +2m latency stress",
+  "risk_per_trade": 0.005,
+  "notional_cap_per_side": 0.3,
+  "reward_risk": 2.0,
+  "max_hold": "7D",
+  "economic_filter_minimum_2R_fraction": 0.0015,
+  "one_way_cost": 0.0005,
+  "same_bar_stop_and_target": "loss-first",
+  "parameter_search": "none"
+}

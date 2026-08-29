@@ -1,0 +1,25 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual 1m K-lines only",
+  "features": [
+    "return_1d",
+    "return_3d",
+    "return_7d",
+    "return_14d",
+    "return_30d",
+    "return_90d",
+    "close_location",
+    "body_fraction",
+    "range_over_20d",
+    "realized_vol_30d",
+    "distance_high_20d",
+    "distance_low_20d"
+  ],
+  "model": "StandardScaler + Ridge(alpha=10)",
+  "training": "trailing 730D; monthly refit; 1D label purge",
+  "prediction_horizon": "next natural-day open-to-open",
+  "economic_gate": 0.0015,
+  "execution": "feature day complete, next midnight +1m; +2m stress",
+  "notional": 0.3,
+  "one_way_cost": 0.0005,
+  "parameter_search": "none"
+}

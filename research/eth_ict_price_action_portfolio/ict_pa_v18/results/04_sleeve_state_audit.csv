@@ -1,0 +1,4 @@
+sleeve,long_days,short_days,flat_days,state_changes
+ema_8_32,760,928,0,59
+ema_16_64,763,925,0,27
+ema_32_128,748,940,0,9

@@ -1,0 +1,2 @@
+candidate,max_consecutive_flat_days,total_flat_days,max_consecutive_losing_days,total_losing_days,max_drawdown_abs,cagr,total_return,calmar,passes_cagr_ge_drawdown,dual_sleeve_eligible
+daily_12m_blend_counter_hedge,0,0,9,871,0.1617835810630929,0.019289958256053,0.0923139827538563,0.1192331022054103,False,True

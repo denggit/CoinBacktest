@@ -1,0 +1,24 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual price and trades only",
+  "mechanism_source": "Patzelt & Bouchaud, Universal scaling and nonlinearity of aggregate price impact, arXiv:1706.04163",
+  "pin": {
+    "window": "10s",
+    "minimum_trades": 50,
+    "absolute_trade_sign_imbalance": 0.8,
+    "price_gate": "prior 60 complete 1m median absolute return and range divided by sqrt(6)"
+  },
+  "release": "next full 1m bar through 30m; abs trade-sign imbalance <=20%; close breaks opposite absorbed flow",
+  "execution": "first open after completed release bar; 2m fixed latency stress",
+  "economic_filter": {
+    "minimum_2R_target_fraction": 0.0015,
+    "round_trip_cost": 0.001
+  },
+  "risk_per_trade": 0.005,
+  "notional_cap_per_side": 0.3,
+  "portfolio_gross_cap": 0.75,
+  "reward_risk": 2.0,
+  "max_hold": "4H",
+  "one_way_cost": 0.0005,
+  "same_bar_stop_and_target": "loss-first",
+  "parameter_search": "none"
+}

@@ -1,0 +1,26 @@
+{
+  "status": "NO_LIVE_MODEL_APPROVED",
+  "model_families": 17,
+  "candidate_rows": 74,
+  "live_gate_pass_count": 0,
+  "causality_tests": "23 passed",
+  "data_scope": "OKX ETH-USDT-SWAP only; 2022-01-01 through 2026-08-15",
+  "fee": "0.05% per side",
+  "execution": "1m main; 2m delay stress where applicable",
+  "best_surviving_baseline": {
+    "candidate": "daily_pa_core_only",
+    "total_return": 0.188409,
+    "cagr": 0.038057,
+    "max_drawdown": 0.120845,
+    "calmar": 0.314923,
+    "max_consecutive_flat_days": 0,
+    "max_consecutive_losing_days": 9,
+    "approval": false
+  },
+  "missing_sources": [],
+  "limitations": [
+    "No historical backtest can prove future profitability or absolute non-liquidation.",
+    "All 2022-2026 history has now been viewed; later variants are research iterations, not sealed holdouts.",
+    "A future candidate must pass an untouched paper-forward period before live use."
+  ]
+}

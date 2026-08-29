@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Human Trader Replay Lab</title>
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">CoinBacktest · Human Trader Replay Lab V1.2</div>
+      <h1>SOXL · 07:30 ET 开始 Setup；30m / 15m 前置，2m / 1m 执行</h1>
+    </div>
+    <div class="top-actions">
+      <span id="causalBadge" class="badge good">CAUSAL</span>
+      <span id="episodeBadge" class="badge">未开始</span>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="left-panel panel">
+      <section>
+        <h2>Replay 起点</h2>
+        <label>Symbol
+          <input id="symbol" value="SOXL" readonly />
+          <span class="subtle">Alpaca SIP · split · 仅交易日 · America/New_York</span>
+        </label>
+        <div class="mode-row">
+          <label class="radio"><input type="radio" name="startMode" value="random" checked />随机</label>
+          <label class="radio"><input type="radio" name="startMode" value="specific" />指定时间</label>
+        </div>
+        <div id="randomBlock">
+          <label>随机日期开始
+            <input id="randomStart" type="date" value="2023-01-01" />
+          </label>
+          <label>随机日期结束
+            <input id="randomEnd" type="date" value="2026-06-30" />
+          </label>
+        </div>
+        <div id="specificBlock" class="hidden">
+          <label>指定交易日
+            <input id="specificStart" type="date" value="2025-01-15" />
+          </label>
+          <div class="subtle">无论随机还是指定日期，都固定从纽约时间 07:30 开始。</div>
+        </div>
+        <button id="newEpisodeBtn" class="btn primary full">新建 Episode</button>
+      </section>
+
+      <section>
+        <h2>你的市场判断</h2>
+        <div class="button-grid bias-grid">
+          <button class="btn bias" data-bias="BULLISH">↑ Bullish</button>
+          <button class="btn bias" data-bias="BEARISH">↓ Bearish</button>
+          <button class="btn bias" data-bias="NEUTRAL">↔ Neutral</button>
+          <button class="btn bias" data-bias="UNSURE">? Unsure</button>
+        </div>
+        <div class="subtle">记录当前激活图的来源周期；Bias 与 Delivery Target 仍然分开。</div>
+      </section>
+
+      <section>
+        <h2>共享图上标记</h2>
+        <label class="magnet-toggle"><input id="magnetToggle" type="checkbox" checked /> <span>🧲 磁铁：自动吸附当前 K 的 O/H/L/C</span></label>
+        <div id="activePaneInfo" class="active-pane-info">当前图：30m 前置 Setup</div>
+        <div id="selectedPrice" class="selected-price">在任意一张图点击 K 线附近的价格</div>
+        <label>Liquidity 类型
+          <select id="liquidityKind">
+            <option value="BSL">BSL</option>
+            <option value="SSL">SSL</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </label>
+        <label>重要程度
+          <select id="liquidityImportance">
+            <option value="normal">Normal</option>
+            <option value="high">High</option>
+            <option value="a_plus">A+</option>
+          </select>
+        </label>
+        <label>共享水平线名称（可选）
+          <input id="markerLabel" placeholder="例如：关键 defended low" />
+        </label>
+        <div class="button-grid">
+          <button id="markLiquidityBtn" class="btn">标 Liquidity</button>
+          <button id="markTargetBtn" class="btn">标 Delivery Target</button>
+          <button id="markLineBtn" class="btn">共享水平线</button>
+          <button id="setSlBtn" class="btn danger-soft">设 SL</button>
+          <button id="setTpBtn" class="btn success-soft">设 TP</button>
+        </div>
+        <div class="subtle share-note">从任何图画出的价格线都会显示到其它图；同时保留 source timeframe + anchor time。</div>
+      </section>
+    </aside>
+
+    <main class="center-panel">
+      <div class="chart-head panel">
+        <div>
+          <div id="cursorTime" class="cursor-time">等待 Episode</div>
+          <div id="clockInfo" class="clock-info">SOXL · 07:30 ET 开始 · 09:30 ET 开盘</div>
+          <div id="chartMeta" class="subtle">四张图共享同一个 causal decision cursor</div>
+        </div>
+        <div class="legend-inline">
+          <span><i class="dot setup"></i>前置</span>
+          <span><i class="dot exec"></i>执行</span>
+          <span><i class="dot shared"></i>共享标记</span>
+        </div>
+      </div>
+
+      <section id="chartGrid" class="chart-grid">
+        <article class="chart-card panel active" data-pane="setup30">
+          <div class="pane-head">
+            <div><b>前置 Setup A</b><small id="meta-setup30">30m</small></div>
+            <div class="pane-actions">
+              <select class="pane-tf" data-pane="setup30" aria-label="Setup A timeframe">
+                <option value="30m" selected>30m</option><option value="15m">15m</option><option value="5m">5m</option><option value="2m">2m</option><option value="1m">1m</option><option value="1H">1H</option><option value="4H">4H</option><option value="1D">1D</option>
+              </select>
+              <button class="pane-fit" data-pane="setup30" title="恢复最近视图">Fit</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="wrap-setup30"><canvas id="canvas-setup30"></canvas><div class="crosshair-info hidden" id="crosshair-setup30"></div></div>
+        </article>
+
+        <article class="chart-card panel" data-pane="setup15">
+          <div class="pane-head">
+            <div><b>前置 Setup B</b><small id="meta-setup15">15m</small></div>
+            <div class="pane-actions">
+              <select class="pane-tf" data-pane="setup15" aria-label="Setup B timeframe">
+                <option value="30m">30m</option><option value="15m" selected>15m</option><option value="5m">5m</option><option value="2m">2m</option><option value="1m">1m</option><option value="1H">1H</option><option value="4H">4H</option><option value="1D">1D</option>
+              </select>
+              <button class="pane-fit" data-pane="setup15" title="恢复最近视图">Fit</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="wrap-setup15"><canvas id="canvas-setup15"></canvas><div class="crosshair-info hidden" id="crosshair-setup15"></div></div>
+        </article>
+
+        <article class="chart-card panel execution" data-pane="exec2">
+          <div class="pane-head">
+            <div><b>执行 A</b><small id="meta-exec2">2m</small></div>
+            <div class="pane-actions">
+              <select class="pane-tf" data-pane="exec2" aria-label="Execution A timeframe">
+                <option value="30m">30m</option><option value="15m">15m</option><option value="5m">5m</option><option value="2m" selected>2m</option><option value="1m">1m</option><option value="1H">1H</option><option value="4H">4H</option><option value="1D">1D</option>
+              </select>
+              <button class="pane-fit" data-pane="exec2" title="恢复最近视图">Fit</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="wrap-exec2"><canvas id="canvas-exec2"></canvas><div class="crosshair-info hidden" id="crosshair-exec2"></div></div>
+        </article>
+
+        <article class="chart-card panel execution" data-pane="exec1">
+          <div class="pane-head">
+            <div><b>执行 B</b><small id="meta-exec1">1m</small></div>
+            <div class="pane-actions">
+              <select class="pane-tf" data-pane="exec1" aria-label="Execution B timeframe">
+                <option value="30m">30m</option><option value="15m">15m</option><option value="5m">5m</option><option value="2m">2m</option><option value="1m" selected>1m</option><option value="1H">1H</option><option value="4H">4H</option><option value="1D">1D</option>
+              </select>
+              <button class="pane-fit" data-pane="exec1" title="恢复最近视图">Fit</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="wrap-exec1"><canvas id="canvas-exec1"></canvas><div class="crosshair-info hidden" id="crosshair-exec1"></div></div>
+        </article>
+      </section>
+
+      <section class="replay-panel panel">
+        <div class="replay-controls">
+          <button id="step1Btn" class="btn">+1m</button>
+          <button id="step2Btn" class="btn">+2m</button>
+          <button id="step5Btn" class="btn">+5m</button>
+          <button id="step15Btn" class="btn">+15m</button>
+          <button id="playBtn" class="btn primary">▶ 自动播放</button>
+          <label class="speed-label">速度
+            <select id="playSpeed">
+              <option value="900">慢</option>
+              <option value="350" selected>正常</option>
+              <option value="140">快</option>
+              <option value="60">很快</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="decision-strip panel">
+        <div class="decision-left">
+          <button id="watchBtn" class="decision watch">◎ 开始关注</button>
+          <button id="waitBtn" class="decision">… 继续等</button>
+          <button id="skipBtn" class="decision">× Skip</button>
+          <button id="invalidateBtn" class="decision danger">⚠ Invalid</button>
+        </div>
+        <div class="trade-actions">
+          <button id="longBtn" class="trade long">LONG</button>
+          <button id="shortBtn" class="trade short">SHORT</button>
+          <button id="closeTradeBtn" class="trade flat">FLAT</button>
+        </div>
+      </section>
+    </main>
+
+    <aside class="right-panel panel">
+      <section>
+        <div class="section-title-row">
+          <h2>Decision Timeline</h2>
+          <button id="exportBtn" class="link-btn">导出 JSON</button>
+        </div>
+        <div id="timeline" class="timeline empty">建立 Episode 后，所有操作都会自动记录。</div>
+      </section>
+
+      <section>
+        <h2>一句话备注</h2>
+        <textarea id="noteText" rows="4" placeholder="例如：30m 上方 BSL 是目标；扫完后 1m 这个 MSS 太小，继续等。"></textarea>
+        <button id="saveNoteBtn" class="btn full">保存 Note</button>
+      </section>
+
+      <section class="current-state">
+        <h2>当前记录</h2>
+        <div class="state-row"><span>Active chart</span><b id="currentChart">30m</b></div>
+        <div class="state-row"><span>Bias</span><b id="currentBias">-</b></div>
+        <div class="state-row"><span>Target</span><b id="currentTarget">-</b></div>
+        <div class="state-row"><span>Position</span><b id="currentPosition">Flat</b></div>
+        <div class="state-row"><span>SL</span><b id="currentSl">-</b></div>
+        <div class="state-row"><span>TP</span><b id="currentTp">-</b></div>
+      </section>
+
+      <section>
+        <button id="endEpisodeBtn" class="btn danger-soft full">结束 Episode</button>
+        <div id="status" class="status">准备就绪</div>
+      </section>
+    </aside>
+  </div>
+</div>
+<script src="/static/app.js?v=3"></script>
+</body>
+</html>

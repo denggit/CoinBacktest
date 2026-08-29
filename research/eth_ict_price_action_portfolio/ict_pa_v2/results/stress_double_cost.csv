@@ -1,0 +1,2 @@
+candidate,total_return,cagr,max_drawdown,calmar,max_consecutive_flat_days,max_consecutive_losing_days,positive_month_rate,annual_volatility,max_gross_exposure,total_cost,scenario
+double_cost,-0.023027438740909845,-0.005028327912332431,0.19976246455808855,-0.025171535220372958,0,11,0.4107142857142857,0.11071175006106192,0.668449026872266,0.15684558817941843,double_cost

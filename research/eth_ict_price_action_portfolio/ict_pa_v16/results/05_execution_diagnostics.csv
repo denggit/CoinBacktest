@@ -1,0 +1,5 @@
+delay_minutes,side,candidate_events,skipped_overlap,skipped_invalid_stop,skipped_cost_distance,trades
+1,long,83,0,0,0,83
+1,short,155,0,0,0,155
+2,long,83,0,0,0,83
+2,short,155,0,1,0,154

@@ -1,0 +1,15 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "mechanism": "canonical NR7 daily contraction breakout",
+  "nr_days": 7,
+  "breakout_observation": "first 1m close outside completed NR7 day range during next 24H",
+  "execution": "next 1m open; +2m stress",
+  "risk_per_trade": 0.005,
+  "notional_cap_per_side": 0.3,
+  "reward_risk": 2.0,
+  "max_hold": "48H",
+  "minimum_2R_target_fraction": 0.0015,
+  "one_way_cost": 0.0005,
+  "same_bar_stop_and_target": "loss-first",
+  "parameter_search": "none"
+}

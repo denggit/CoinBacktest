@@ -1,0 +1,13 @@
+{
+  "source": "OKX ETH-USDT-SWAP price and trades only",
+  "mechanism_source": "Patzelt & Bouchaud, Universal scaling and nonlinearity of aggregate price impact, arXiv:1706.04163",
+  "pin": "5m absolute trade-sign imbalance >=80%, below prior-week median return/range, trades >= median",
+  "release": "within 30m, 1m trade-sign imbalance <=20% and price breaks opposite absorbed flow",
+  "execution": "release bar completion then next 1m open; 2m delay stress",
+  "risk_per_trade": 0.005,
+  "notional_cap": 0.3,
+  "reward_risk": 2.0,
+  "max_hold": "4H",
+  "one_way_cost": 0.0005,
+  "gross_cap": 0.75
+}

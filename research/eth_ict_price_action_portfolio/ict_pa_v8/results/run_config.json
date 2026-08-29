@@ -1,0 +1,13 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "core": "frozen daily PA/BOS core",
+  "states": [
+    "90D price efficiency above its trailing prior-365D median",
+    "prior completed 90D core return positive"
+  ],
+  "availability": "daily close +1 day boundary +1 minute execution",
+  "risk_on_multiplier": 2.0,
+  "risk_floor_multiplier": 0.25,
+  "one_way_cost": 0.0005,
+  "gross_cap": 0.75
+}

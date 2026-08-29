@@ -1,0 +1,4 @@
+cutoff,rows_compared,passed,differences
+2023-12-31 20:00:00,4379,True,0
+2024-12-31 20:00:00,6575,True,0
+2025-12-31 20:00:00,8765,True,0

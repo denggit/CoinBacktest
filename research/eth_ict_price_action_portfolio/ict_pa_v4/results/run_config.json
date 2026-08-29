@@ -1,0 +1,41 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "feature_frequency": "1H completed bars from OKX 15m trade bars",
+  "decision_frequency": "4H non-overlapping",
+  "execution": "next 1m open; 2m is delay stress",
+  "model": "fixed StandardScaler + L2 LogisticRegression(C=0.10)",
+  "training": "trailing 365 days, retrained monthly, 4H label purge before each test month",
+  "features": [
+    "return_1h",
+    "return_3h",
+    "return_6h",
+    "return_12h",
+    "return_24h",
+    "return_72h",
+    "close_location",
+    "body_fraction",
+    "range_over_atr",
+    "distance_high_24h",
+    "distance_low_24h",
+    "realized_vol_24h",
+    "volume_relative_24h",
+    "trades_relative_24h",
+    "delta_ratio_1h",
+    "delta_ratio_4h",
+    "delta_ratio_24h",
+    "large_delta_ratio_1h",
+    "large_delta_ratio_4h",
+    "taker_buy_ratio_4h",
+    "sell_absorption",
+    "buy_absorption",
+    "price_flow_efficiency_4h",
+    "max_trade_share"
+  ],
+  "entry_thresholds": {
+    "long": 0.56,
+    "short": 0.44
+  },
+  "one_way_cost": 0.0005,
+  "exchange_leverage_cap": 15.0,
+  "strategy_gross_cap": 0.75
+}

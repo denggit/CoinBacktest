@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="CoinBacktest 实时宏观重新定价监控面板">
+  <title>Macro Pulse · Real-time Repricing Monitor</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+  <script src="/assets/dashboard.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="Macro Pulse 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>
+        <strong>MACRO PULSE</strong>
+        <small>REAL-TIME REPRICING MONITOR</small>
+      </span>
+    </a>
+    <div class="topbar-status">
+      <div class="connection-pill" id="connection-pill" data-state="connecting" role="status" aria-live="polite">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-state">正在连接</span>
+      </div>
+      <div class="clock-block">
+        <span id="local-clock">--:--:--</span>
+        <small id="last-update">北京时间 · 等待首笔推送</small>
+      </div>
+    </div>
+  </header>
+
+  <main id="top" class="shell">
+    <section class="command-grid" aria-label="宏观状态与实时建议">
+      <article class="regime-panel" id="regime-panel" data-tone="waiting">
+        <div class="regime-noise" aria-hidden="true"></div>
+        <div class="panel-topline">
+          <span class="eyebrow">MARKET REGIME</span>
+          <span class="window-badge" id="regime-window">LIVE</span>
+        </div>
+        <p class="regime-label" id="regime-label">WAITING FOR DATA</p>
+        <p class="pricing-level" id="pricing-level">WAITING FOR PRICING LEVEL</p>
+        <h1 id="regime-headline">等待监控后端数据</h1>
+        <p class="regime-detail" id="regime-detail">Dashboard 将自动接收新数据，无需刷新页面。</p>
+        <div class="regime-action-row">
+          <span class="action-caption">当前建议</span>
+          <strong id="regime-action">保持后端采集</strong>
+        </div>
+        <div class="signal-rail" aria-label="核心信号确认状态">
+          <div class="signal-node" id="fed-signal" data-state="idle">
+            <span>FEDWATCH</span><strong>等待窗口</strong>
+          </div>
+          <div class="rail-link" aria-hidden="true"></div>
+          <div class="signal-node" id="us2-signal" data-state="idle">
+            <span>US 2Y</span><strong>等待窗口</strong>
+          </div>
+          <div class="rail-link" aria-hidden="true"></div>
+          <div class="signal-node" id="curve-signal" data-state="idle">
+            <span>CURVE</span><strong>等待数据</strong>
+          </div>
+        </div>
+      </article>
+
+      <aside class="guidance-panel">
+        <div class="panel-topline">
+          <span class="eyebrow">AUTO JUDGMENT</span>
+          <span class="window-badge" id="auto-regime-window">15M</span>
+        </div>
+        <div class="auto-regime" id="auto-regime" data-tone="waiting">
+          <span>MACRO REGIME:</span>
+          <strong id="auto-regime-label">WAITING FOR DATA</strong>
+        </div>
+        <div class="auto-signal-list" id="auto-signal-list" aria-live="polite">
+          <div class="auto-signal" data-state="pending"><i></i><strong>FedWatch</strong><span>待确认</span></div>
+          <div class="auto-signal" data-state="pending"><i></i><strong>2Y</strong><span>待确认</span></div>
+          <div class="auto-signal" data-state="pending"><i></i><strong>10Y</strong><span>待确认</span></div>
+          <div class="auto-signal" data-state="pending"><i></i><strong>Curve</strong><span>待确认</span></div>
+          <div class="auto-signal" data-state="pending"><i></i><strong>DXY</strong><span>待确认</span></div>
+        </div>
+        <div class="meeting-block">
+          <span>最近 FOMC</span>
+          <strong id="meeting-date">—</strong>
+          <small id="meeting-likely">等待 FedWatch</small>
+        </div>
+      </aside>
+    </section>
+
+    <section class="metrics-grid" aria-label="核心宏观指标">
+      <a class="metric-card fedwatch-card" data-metric="fedwatch_context" href="/history?metric=fedwatch_bias" aria-label="查看 FedWatch Policy Bias 更长历史">
+        <div class="metric-heading"><span>FEDWATCH PATH</span><span class="metric-window">15M / 60M</span><span class="history-link-hint">HISTORY ↗</span><i class="source-light" aria-hidden="true"></i></div>
+        <div class="fedwatch-triptych" aria-label="FedWatch cut hold hike probabilities">
+          <div data-tone="dovish"><span>CUT</span><strong id="fed-cut-value">—</strong><small>%</small></div>
+          <div data-tone="hold"><span>HOLD</span><strong id="fed-hold-value">—</strong><small>%</small></div>
+          <div data-tone="hawkish"><span>HIKE</span><strong id="fed-hike-value">—</strong><small>%</small></div>
+        </div>
+        <div class="fedwatch-context-row">
+          <div><span>POLICY BIAS</span><strong id="fed-bias">—</strong></div>
+          <div><span>EXPECTED MOVE</span><strong id="fed-expected">—</strong></div>
+        </div>
+        <div class="change-row" id="fed-changes"><span class="change-chip neutral">Bias 15m —</span><span class="change-chip neutral">Bias 60m —</span></div>
+        <canvas class="sparkline" id="fed-sparkline" aria-label="FedWatch policy bias trend"></canvas>
+        <div class="metric-footer"><span id="fed-source">等待数据</span><time id="fed-time">—</time></div>
+      </a>
+
+      <a class="metric-card" data-metric="us2y_yield" href="/history?metric=us2y_yield" aria-label="查看 US 2Y Yield 更长历史">
+        <div class="metric-heading"><span>US 2Y YIELD</span><span class="history-link-hint">HISTORY ↗</span><i class="source-light" aria-hidden="true"></i></div>
+        <div class="metric-value-row"><strong id="us2-value">—</strong><span>%</span></div>
+        <div class="change-row" id="us2-changes"><span class="change-chip neutral">5m —</span><span class="change-chip neutral">15m —</span><span class="change-chip neutral">60m —</span></div>
+        <canvas class="sparkline" id="us2-sparkline" aria-label="US 2Y yield trend"></canvas>
+        <div class="metric-footer"><span id="us2-source">等待数据</span><time id="us2-time">—</time></div>
+      </a>
+
+      <a class="metric-card" data-metric="us10y_yield" href="/history?metric=us10y_yield" aria-label="查看 US 10Y Yield 更长历史">
+        <div class="metric-heading"><span>US 10Y YIELD</span><span class="history-link-hint">HISTORY ↗</span><i class="source-light" aria-hidden="true"></i></div>
+        <div class="metric-value-row"><strong id="us10-value">—</strong><span>%</span></div>
+        <div class="change-row" id="us10-changes"><span class="change-chip neutral">5m —</span><span class="change-chip neutral">15m —</span><span class="change-chip neutral">60m —</span></div>
+        <canvas class="sparkline" id="us10-sparkline" aria-label="US 10Y yield trend"></canvas>
+        <div class="metric-footer"><span id="us10-source">等待数据</span><time id="us10-time">—</time></div>
+      </a>
+
+      <a class="metric-card" data-metric="dxy_index" href="/history?metric=dxy_index" aria-label="查看 US Dollar Index 更长历史">
+        <div class="metric-heading"><span>US DOLLAR INDEX</span><span class="history-link-hint">HISTORY ↗</span><i class="source-light" aria-hidden="true"></i></div>
+        <div class="metric-value-row"><strong id="dxy-value">—</strong><span>DXY</span></div>
+        <div class="change-row" id="dxy-changes"><span class="change-chip neutral">5m —</span><span class="change-chip neutral">15m —</span><span class="change-chip neutral">60m —</span></div>
+        <canvas class="sparkline" id="dxy-sparkline" aria-label="US Dollar Index trend"></canvas>
+        <div class="metric-footer"><span id="dxy-source">等待数据</span><time id="dxy-time">—</time></div>
+      </a>
+    </section>
+
+    <section class="analytics-grid" aria-label="收益率趋势与概率分布">
+      <article class="chart-panel">
+        <div class="panel-header">
+          <div><span class="eyebrow">YIELD TAPE</span><h2>美债收益率实时轨迹</h2></div>
+          <div class="range-switch" role="group" aria-label="图表时间范围">
+            <button type="button" class="active" data-range="60">1H</button>
+            <button type="button" data-range="240">4H</button>
+          </div>
+        </div>
+        <div class="chart-legend">
+          <span><i class="legend-dot two-year"></i>US 2Y <strong id="legend-us2">—</strong></span>
+          <span><i class="legend-dot ten-year"></i>US 10Y <strong id="legend-us10">—</strong></span>
+        </div>
+        <div class="chart-wrap" id="chart-wrap">
+          <canvas id="yield-chart" aria-label="US 2Y and US 10Y yield chart"></canvas>
+          <div class="chart-empty" id="chart-empty">等待足够的收益率数据绘制曲线</div>
+          <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+        </div>
+      </article>
+
+      <article class="probability-panel">
+        <div class="panel-header">
+          <div><span class="eyebrow">CME FEDWATCH</span><h2>目标利率概率分布</h2></div>
+          <span class="distribution-total" id="distribution-total">Σ —</span>
+        </div>
+        <div class="probability-list" id="probability-list">
+          <div class="probability-empty">等待 FedWatch 分布</div>
+        </div>
+        <div class="probability-foot">
+          <div><span>当前主区间</span><strong id="probability-leader">—</strong></div>
+          <div><span>隐含期望变动</span><strong id="probability-expected">—</strong></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="operations-grid" aria-label="来源健康与运行状态">
+      <article class="source-panel">
+        <div class="panel-header">
+          <div><span class="eyebrow">SOURCE HEALTH</span><h2>数据来源状态</h2></div>
+          <span class="read-only-badge">READ ONLY</span>
+        </div>
+        <div class="source-list" id="source-list">
+          <div class="source-row"><span class="health-dot waiting"></span><strong>等待后端</strong><span>—</span><time>—</time></div>
+        </div>
+      </article>
+
+      <article class="system-panel">
+        <div class="panel-header">
+          <div><span class="eyebrow">SYSTEM DESIGN</span><h2>前后端独立运行</h2></div>
+        </div>
+        <div class="independence-diagram" aria-label="前后端独立架构">
+          <div><span>24H</span><strong>Collector</strong><small>持续写入 SQLite</small></div>
+          <i aria-hidden="true"></i>
+          <div><span>WAL</span><strong>SQLite</strong><small>并发只读快照</small></div>
+          <i aria-hidden="true"></i>
+          <div><span>SSE</span><strong>Dashboard</strong><small>随时开启或关闭</small></div>
+        </div>
+        <div class="window-policy">
+          <div><span>FEDWATCH</span><strong>15m · 60m</strong><small>Policy Bias 变化</small></div>
+          <div><span>RATES + DXY</span><strong>5m · 15m · 60m</strong><small>收益率 bp / DXY % 变化</small></div>
+          <div><span>REGIME</span><strong>15m · 60m</strong><small>方向 + 曲线形态 + DXY 确认</small></div>
+        </div>
+        <p class="system-note">关闭这个网页或 Dashboard 服务不会停止数据采集。重新打开后将自动加载最新历史和实时推送。</p>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>COINBACKTEST · MACRO MONITOR</span>
+    <span>LOCAL / FREE PUBLIC SOURCES / NO TRADING EXECUTION</span>
+  </footer>
+</body>
+</html>

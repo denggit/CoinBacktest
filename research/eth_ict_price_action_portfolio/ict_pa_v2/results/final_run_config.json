@@ -1,0 +1,52 @@
+{
+  "research_window": [
+    "2022-01-01",
+    "2026-08-15"
+  ],
+  "timezone": "Asia/Shanghai natural days (local naive +08 source convention)",
+  "portfolio": "equal-weight adjacent PA/microstructure definitions plus equal-mechanism slow core",
+  "tactical_definitions": {
+    "adjacent_fast": [
+      24,
+      0.15,
+      1.0,
+      4
+    ],
+    "frozen_base": [
+      30,
+      0.2,
+      1.25,
+      6
+    ],
+    "adjacent_slow": [
+      36,
+      0.25,
+      1.5,
+      8
+    ]
+  },
+  "one_way_cost": 0.0005,
+  "round_trip_cost": 0.001,
+  "account_mode": "cross-margin hedge mode; sleeves accounted gross, PnL net",
+  "exchange_max_leverage": 15.0,
+  "strategy_gross_cap": 0.95,
+  "actual_max_gross": 0.42613633561947817,
+  "price_data": {
+    "start": "2020-01-01 00:00:00",
+    "end": "2026-08-15 23:45:00",
+    "rows_15m": 232224
+  },
+  "microstructure_data": {
+    "start": "2022-01-01 00:00:00",
+    "end": "2026-07-13 23:45:00",
+    "rows_15m": 158806,
+    "after_coverage_policy": "tactical positions forced to zero; no extrapolation"
+  },
+  "causality": [
+    "day D close -> D+1 open",
+    "4H [T,T+4H) close -> position first at T+4H open",
+    "rolling flow quantiles explicitly shift(1)"
+  ],
+  "selection": "no historical winner; equal capital across fast/base/slow adjacent definitions",
+  "approval_caveat": "Full history was visible during research. Historical validation cannot replace 8-12 weeks of sealed paper-forward evidence."
+}

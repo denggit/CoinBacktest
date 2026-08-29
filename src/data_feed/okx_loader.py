@@ -84,6 +84,115 @@ class OKXDataLoader:
             logger.error(f"读取本地数据库失败: {e}")
             return pd.DataFrame()
 
+    def load_local_data_range(self, start_time=None, end_time=None) -> pd.DataFrame:
+        """Load a bounded local timestamp range without reading the whole table.
+
+        This is intended for replay/research workloads that only need a small
+        historical window from a very large 1m table (for example ETH).  It is
+        local-only and never falls back to the network.  ``start_time`` and
+        ``end_time`` use the same timezone-naive wall-clock convention as the
+        timestamps stored by :class:`OKXDataLoader`.
+        """
+        try:
+            clauses = []
+            params = []
+            if start_time is not None:
+                start = pd.Timestamp(start_time)
+                if start.tzinfo is not None:
+                    start = start.tz_localize(None)
+                clauses.append("timestamp >= ?")
+                params.append(start.strftime("%Y-%m-%d %H:%M:%S"))
+            if end_time is not None:
+                end = pd.Timestamp(end_time)
+                if end.tzinfo is not None:
+                    end = end.tz_localize(None)
+                clauses.append("timestamp <= ?")
+                params.append(end.strftime("%Y-%m-%d %H:%M:%S"))
+
+            conn = self._get_db_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?",
+                    (self.table_name,),
+                )
+                if cursor.fetchone()[0] == 0:
+                    return pd.DataFrame()
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                query = f"SELECT * FROM {self.table_name}{where} ORDER BY timestamp"
+                return pd.read_sql(
+                    query,
+                    conn,
+                    params=params,
+                    index_col="timestamp",
+                    parse_dates=["timestamp"],
+                )
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"读取本地数据库区间失败: {e}")
+            return pd.DataFrame()
+
+    def get_local_data_coverage(self) -> dict:
+        """Return row count and timestamp bounds for this local table only."""
+        try:
+            conn = self._get_db_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT count(name) FROM sqlite_master WHERE type='table' AND name=?",
+                    (self.table_name,),
+                )
+                if cursor.fetchone()[0] == 0:
+                    return {"rows": 0, "start": None, "end": None}
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n, MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts FROM {self.table_name}"
+                ).fetchone()
+                return {"rows": int(row[0] or 0), "start": row[1], "end": row[2]}
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"读取本地数据库覆盖范围失败: {e}")
+            return {"rows": 0, "start": None, "end": None}
+
+    @staticmethod
+    def list_local_symbols(db_dir=None, timeframe="1m") -> list:
+        """Discover symbols that already have a local OKX table.
+
+        The method only inspects ``crypto_history.db`` and never creates or
+        downloads data.  Table names written by ``OKXDataLoader`` follow
+        ``<SYMBOL_WITH_UNDERSCORES>_<timeframe>``.
+        """
+        if db_dir is None:
+            current_file = os.path.abspath(__file__)
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+            db_dir = os.path.join(project_root, "data")
+        db_path = os.path.join(str(db_dir), "crypto_history.db")
+        if not os.path.exists(db_path):
+            return []
+        suffix = f"_{timeframe}"
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ? ORDER BY name",
+                    (f"%{suffix}",),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"读取本地 symbol 列表失败: {e}")
+            return []
+        symbols = []
+        for (name,) in rows:
+            if not str(name).endswith(suffix):
+                continue
+            base = str(name)[: -len(suffix)]
+            symbol = base.replace("_", "-")
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+        return symbols
+
     def save_local_data(self, df: pd.DataFrame):
         if df.empty:
             return

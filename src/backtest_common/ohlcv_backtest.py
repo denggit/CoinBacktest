@@ -30,6 +30,9 @@ class SignalBacktestParams:
     max_notional_mult: float = 3.0
     fee_rate: float = 0.0005
     slippage_pct: float = 0.0002
+    risk_mult_col: str | None = None
+    min_risk_mult: float = 0.0
+    max_risk_mult: float = 2.0
 
     signal_col: str = "signal"
     stop_col: str = "stop"
@@ -102,6 +105,7 @@ def run_signal_backtest(df: pd.DataFrame, params: SignalBacktestParams) -> tuple
     entry_fee = 0.0
     max_fav = 0.0
     max_adv = 0.0
+    entry_risk_mult = 1.0
     last_exit_i = -10**9
 
     rows = list(df.itertuples())
@@ -198,6 +202,7 @@ def run_signal_backtest(df: pd.DataFrame, params: SignalBacktestParams) -> tuple
                         "sl_pct": round(abs(entry_price - initial_sl) / entry_price * 100, 4),
                         "holding_bars": int(hold_bars),
                         "holding_hours": round(float(_infer_holding_hours(df, hold_bars)), 4),
+                        "risk_mult": float(entry_risk_mult),
                         "note": note,
                     }
                 )
@@ -217,7 +222,17 @@ def run_signal_backtest(df: pd.DataFrame, params: SignalBacktestParams) -> tuple
                 if not ok:
                     continue
                 rpc = abs(entry - stop)
-                risk_usdt = capital * params.risk_per_trade
+                risk_mult = 1.0
+                if params.risk_mult_col:
+                    raw_risk_mult = getattr(row, params.risk_mult_col, 1.0)
+                    try:
+                        risk_mult = float(raw_risk_mult)
+                    except (TypeError, ValueError):
+                        risk_mult = 1.0
+                    if not math.isfinite(risk_mult):
+                        risk_mult = 1.0
+                    risk_mult = max(params.min_risk_mult, min(risk_mult, params.max_risk_mult))
+                risk_usdt = capital * params.risk_per_trade * risk_mult
                 q = risk_usdt / rpc
                 q = min(q, (capital * params.max_notional_mult) / entry)
                 if q > 0 and math.isfinite(q):
@@ -234,6 +249,7 @@ def run_signal_backtest(df: pd.DataFrame, params: SignalBacktestParams) -> tuple
                     entry_fee = qty * entry_price * params.fee_rate
                     max_fav = entry_price
                     max_adv = entry_price
+                    entry_risk_mult = risk_mult
 
         equity_rows.append({"time": ts, "capital": capital, "drawdown_pct": (peak - capital) / peak if peak > 0 else 0.0})
 
@@ -272,6 +288,7 @@ def run_signal_backtest(df: pd.DataFrame, params: SignalBacktestParams) -> tuple
                 "sl_pct": round(abs(entry_price - initial_sl) / entry_price * 100, 4),
                 "holding_bars": int(len(df) - 1 - entry_i),
                 "holding_hours": round(float(_infer_holding_hours(df, len(df) - 1 - entry_i)), 4),
+                "risk_mult": float(entry_risk_mult),
                 "note": "FORCE_CLOSE_END",
             }
         )

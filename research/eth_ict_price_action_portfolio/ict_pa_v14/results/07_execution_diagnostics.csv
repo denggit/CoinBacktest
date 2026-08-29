@@ -1,0 +1,5 @@
+delay_minutes,side,candidate_releases,trades,skipped_overlap,skipped_invalid_stop,skipped_cost_distance
+1,long,73215,14598,22450,13,36154
+1,short,73098,14762,21098,31,37207
+2,long,73215,15916,26431,8827,22041
+2,short,73098,16102,25482,9017,22497

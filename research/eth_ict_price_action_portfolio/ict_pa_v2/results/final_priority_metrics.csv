@@ -1,0 +1,2 @@
+candidate,total_return,cagr,max_drawdown,calmar,max_consecutive_flat_days,max_consecutive_losing_days,positive_month_rate,annual_volatility,max_gross_exposure,total_cost,hedged_bar_rate,total_flat_days,total_losing_days,passes_cagr_ge_max_drawdown,historical_liquidations
+frozen_equal_definition_portfolio,0.07359239581537147,0.015484099880763935,0.17267289077508396,0.08967302169587718,0,9,0.4107142857142857,0.11095787771311058,0.42613633561947817,0.03376279408970922,0.09705826087493134,0,861,False,0

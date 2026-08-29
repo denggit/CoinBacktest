@@ -1,0 +1,12 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "external_hypothesis_source": "Kim and Hansen (2026), arXiv:2607.09426; no external market data used",
+  "observed_window": "first completed 10 seconds of minutes 00/15/30/45",
+  "execution": "next 1m open; 2m delay stress",
+  "horizon": "8H, non-overlapping positions",
+  "model": "fixed standardized Ridge(alpha=10), trailing 365D, monthly refit, label purge",
+  "economic_gate": 0.0015,
+  "rule_control": "rolling prior-180D absolute-OI 99th percentile, no future rows",
+  "one_way_cost": 0.0005,
+  "strategy_gross_cap": 0.75
+}

@@ -1,0 +1,3 @@
+dataset,start,end,rows,missing_timestamps,duplicate_timestamps,invalid_ohlc_rows,ready
+ETH-USDT-SWAP local 1m OHLCV,2022-01-01 00:00:00,2026-08-15 23:59:00,2430720,0,0,0,True
+causal 15m aggregate,2020-01-01 00:00:00,2026-08-15 23:45:00,232224,0,0,0,True

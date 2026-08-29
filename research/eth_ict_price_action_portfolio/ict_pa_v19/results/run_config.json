@@ -1,0 +1,8 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "portfolio": "50% causal daily PA core + 50% fixed multi-speed EMA mechanism",
+  "weight_search": "none; exact equal mechanism allocation",
+  "execution": "1m baseline; 2m fixed latency stress",
+  "one_way_cost": 0.0005,
+  "double_cost_stress": 0.001
+}

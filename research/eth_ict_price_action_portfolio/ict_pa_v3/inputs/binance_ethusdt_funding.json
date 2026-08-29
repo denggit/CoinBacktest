@@ -1,0 +1,8 @@
+{
+  "url": "https://fapi.binance.com/fapi/v1/fundingRate",
+  "symbol": "ETHUSDT",
+  "rows": 5065,
+  "start": "2022-01-01 00:00:00.006000+00:00",
+  "end": "2026-08-16 00:00:00+00:00",
+  "downloaded_utc": "2026-08-17 07:31:36.265193+00:00"
+}

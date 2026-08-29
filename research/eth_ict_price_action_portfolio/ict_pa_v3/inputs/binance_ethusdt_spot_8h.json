@@ -1,0 +1,9 @@
+{
+  "url": "https://api.binance.com/api/v3/klines",
+  "symbol": "ETHUSDT",
+  "interval": "8h",
+  "rows": 5066,
+  "start": "2022-01-01 00:00:00+00:00",
+  "end": "2026-08-16 08:00:00+00:00",
+  "downloaded_utc": "2026-08-17 07:32:31.300714+00:00"
+}

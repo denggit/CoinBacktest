@@ -1,0 +1,13 @@
+{
+  "source": "OKX ETH-USDT-SWAP only",
+  "sleeves": {
+    "permanent_long": 0.1,
+    "six_month_growth_add": 0.2,
+    "one_month_breakdown_short": -0.3
+  },
+  "hedge_release": "two-week high break or 30D momentum positive",
+  "execution": "completed daily state at D+1 plus 1m; 2m delay stress",
+  "one_way_cost": 0.0005,
+  "gross_cap": 0.75,
+  "exchange_leverage_cap": 15.0
+}

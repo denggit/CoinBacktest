@@ -1,0 +1,4 @@
+dataset,start,end,rows,missing_timestamps,duplicate_timestamps,invalid_rows,coverage_policy,ready
+causal 15m price bars from complete local 1m OHLCV,2022-01-01 00:00:00,2026-08-15 23:45:00,162048,0,0,0,complete evaluation source,True
+OKX trade-direction / taker-flow 15m bars,2022-01-01 00:00:00,2026-07-13 23:45:00,158806,74,0,0,tactical sleeve forced to zero after source end; no extrapolation,True
+price/trade-bar timestamp reconciliation,2022-01-01 00:00:00,2026-07-13 23:45:00,158806,0,0,0,median absolute open-price difference = 0.000000 bp,True

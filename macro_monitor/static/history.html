@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="CoinBacktest 宏观指标长历史详情">
+  <title>Macro Pulse · History</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+  <link rel="stylesheet" href="/assets/history.css">
+  <script src="/assets/history.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Macro Pulse 实时面板">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>MACRO PULSE</strong><small>LONG HISTORY VIEW</small></span>
+    </a>
+    <div class="topbar-status">
+      <div class="connection-pill" id="history-status" data-state="connecting" role="status" aria-live="polite">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="history-status-text">正在读取历史</span>
+      </div>
+      <div class="clock-block"><span id="history-clock">--:--:--</span><small>北京时间 · SQLITE READ ONLY</small></div>
+    </div>
+  </header>
+
+  <main class="history-shell">
+    <a class="history-back" href="/">← 返回实时面板</a>
+
+    <nav class="history-metric-nav" aria-label="历史指标切换">
+      <a href="/history?metric=fedwatch_bias" data-history-metric="fedwatch_bias">FEDWATCH BIAS</a>
+      <a href="/history?metric=us2y_yield" data-history-metric="us2y_yield">US 2Y</a>
+      <a href="/history?metric=us10y_yield" data-history-metric="us10y_yield">US 10Y</a>
+      <a href="/history?metric=dxy_index" data-history-metric="dxy_index">DXY</a>
+    </nav>
+
+    <section class="history-hero">
+      <div>
+        <span class="eyebrow">LONG HISTORY</span>
+        <h1 id="history-title">正在加载指标</h1>
+        <p id="history-subtitle">从本地 SQLite 读取，不影响实时采集。</p>
+      </div>
+      <div class="range-switch history-range-switch" role="group" aria-label="历史时间范围">
+        <button type="button" data-history-range="4h">4H</button>
+        <button type="button" class="active" data-history-range="24h">24H</button>
+        <button type="button" data-history-range="7d">7D</button>
+        <button type="button" data-history-range="30d">30D</button>
+      </div>
+    </section>
+
+    <section class="history-stats" aria-label="历史区间摘要">
+      <article><span>当前值</span><strong id="history-current">—</strong><small id="history-unit">—</small></article>
+      <article><span>区间变化</span><strong id="history-change">—</strong><small id="history-change-unit">—</small></article>
+      <article><span>区间最低</span><strong id="history-min">—</strong><small id="history-min-unit">—</small></article>
+      <article><span>区间最高</span><strong id="history-max">—</strong><small id="history-max-unit">—</small></article>
+    </section>
+
+    <section class="history-chart-panel">
+      <div class="history-chart-head">
+        <div><span class="eyebrow">TIME SERIES</span><h2 id="history-chart-title">历史轨迹</h2></div>
+        <div class="history-source"><span id="history-source">等待来源</span><time id="history-latest">—</time></div>
+      </div>
+      <div class="history-chart-wrap">
+        <canvas id="history-chart" aria-label="宏观指标历史时间序列"></canvas>
+        <div class="chart-empty" id="history-empty">正在读取历史数据</div>
+        <div class="chart-tooltip" id="history-tooltip" hidden></div>
+      </div>
+      <div class="history-coverage">
+        <span id="history-coverage">—</span>
+        <span id="history-sampling">—</span>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer"><span>COINBACKTEST · MACRO MONITOR</span><span>LOCAL SQLITE HISTORY / READ ONLY</span></footer>
+</body>
+</html>

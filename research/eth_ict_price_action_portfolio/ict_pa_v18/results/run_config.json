@@ -1,0 +1,26 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "architecture": "three independent sign(EMA fast - EMA slow) sleeves",
+  "ema_pairs_days": [
+    [
+      8,
+      32
+    ],
+    [
+      16,
+      64
+    ],
+    [
+      32,
+      128
+    ]
+  ],
+  "volatility_lookback_days": 30,
+  "target_annual_volatility": 0.1,
+  "gross_cap": 0.6,
+  "execution": "completed daily bar, next midnight +1m; +2m stress",
+  "one_way_cost": 0.0005,
+  "double_cost_stress": 0.001,
+  "parameter_search": "none",
+  "hedge_mode": "independent speed sleeves may oppose one another"
+}

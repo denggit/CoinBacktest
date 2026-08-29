@@ -1,0 +1,18 @@
+{
+  "development_window": [
+    "2022-01-01",
+    "2023-12-31"
+  ],
+  "validation_not_loaded_by_this_script": true,
+  "selection_rule": "positive after costs in 2022 and 2023; >=20 long and >=20 short events; development Calmar>=0.25",
+  "selected_mechanisms": [],
+  "all_predeclared_mechanisms": [
+    "risk_build_breakout",
+    "unwind_continuation",
+    "unwind_exhaustion_reversal",
+    "crowded_failed_auction",
+    "oi_divergence_reversal"
+  ],
+  "source_publication_lag": "1 minute",
+  "written_before_validation": true
+}

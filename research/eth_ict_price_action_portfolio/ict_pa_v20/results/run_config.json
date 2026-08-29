@@ -1,0 +1,14 @@
+{
+  "source": "OKX ETH-USDT-SWAP perpetual K-lines only",
+  "mechanisms": [
+    "causal daily PA core",
+    "7/28/91D BOS",
+    "8/32-16/64-32/128 EMA"
+  ],
+  "allocator": "nonnegative inverse trailing realized volatility; weights sum to one; no expected-return estimate",
+  "weight_lookback_days": 90,
+  "availability": "completed mechanism daily return at D controls D+1 + execution delay",
+  "execution": "1m baseline; 2m stress",
+  "one_way_cost": 0.0005,
+  "parameter_or_weight_search": "none"
+}

@@ -1,6 +1,0 @@
-﻿selected_variant,gate,passed,detail
-V4_strict,2023 discovery,False,positive average net R after 15bp costs; >=25 fills
-V4_strict,OOS sample,True,2024-2026 filled trades=1889
-V4_strict,OOS pooled expectancy,False,weighted net R=-0.418
-V4_strict,Full-year stability,False,positive among 2024 and 2025=0/2
-V4_strict,2026 YTD guardrail,False,not worse than -0.10R after 15bp costs
