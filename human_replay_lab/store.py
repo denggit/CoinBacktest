@@ -230,6 +230,14 @@ class ReplayStore:
                 if order_id:
                     active[order_id] = event
                 continue
+            if event["event_type"] == "LIMIT_MODIFY":
+                order_id = str(payload.get("order_id") or "")
+                if order_id and order_id in active:
+                    # The modify event contains the complete resting-order
+                    # payload, so downstream fill simulation can treat it as the
+                    # current canonical order without mutating audit history.
+                    active[order_id] = event
+                continue
             if event["event_type"] in {"LIMIT_CANCEL", "LIMIT_EXPIRED"}:
                 order_id = str(payload.get("order_id") or "")
                 active.pop(order_id, None)
@@ -291,6 +299,14 @@ class ReplayStore:
                 entry_event_id = int(payload.get("entry_event_id") or 0)
                 if entry_event_id:
                     closed_entry_ids.add(entry_event_id)
+            elif event["event_type"] in {"SL", "MOVE_SL", "TP"}:
+                trade_id = str(payload.get("trade_id") or "")
+                if trade_id and trade_id in active and event.get("price") is not None:
+                    current = active[trade_id]["payload"]
+                    if event["event_type"] in {"SL", "MOVE_SL"}:
+                        current["current_stop_loss"] = float(event["price"])
+                    else:
+                        current["current_take_profit"] = float(event["price"])
 
         # Backward compatibility for V1.6.x episodes that only stored LONG/SHORT
         # fill events plus SL/TP. We intentionally model one unmatched legacy
@@ -336,17 +352,43 @@ class ReplayStore:
         return list(active.values())
 
     def trade_summary(self, episode_id: str) -> dict[str, Any]:
-        closed = [event for event in self.list_events(episode_id) if event["event_type"] == "TRADE_CLOSED"]
+        events = self.list_events(episode_id)
+        closed = [event for event in events if event["event_type"] == "TRADE_CLOSED"]
+        invalidated_orders = [
+            event for event in events
+            if event["event_type"] == "LIMIT_CANCEL"
+            and str((event.get("payload") or {}).get("reason") or "") == "take_profit_before_entry"
+        ]
         wins = losses = breakeven = ambiguous = 0
         total_net_pct = 0.0
         total_r = 0.0
         r_count = 0
+        total_net_pnl = 0.0
+        total_fees = 0.0
+        gross_profit = 0.0
+        gross_loss = 0.0
+        win_pnls: list[float] = []
+        loss_pnls: list[float] = []
+        starting_account_size: float | None = None
         for event in closed:
             payload = event.get("payload") or {}
             reason = str(payload.get("exit_reason") or "")
             if reason == "AMBIGUOUS_BOTH_HIT":
                 ambiguous += 1
             net = payload.get("net_return_pct")
+            pnl = payload.get("net_pnl")
+            if starting_account_size is None and payload.get("account_size") not in (None, ""):
+                starting_account_size = float(payload["account_size"])
+            if pnl is not None:
+                pnl_value = float(pnl)
+                total_net_pnl += pnl_value
+                total_fees += float(payload.get("total_fees") or 0.0)
+                if pnl_value > 1e-12:
+                    gross_profit += pnl_value
+                    win_pnls.append(pnl_value)
+                elif pnl_value < -1e-12:
+                    gross_loss += abs(pnl_value)
+                    loss_pnls.append(abs(pnl_value))
             if net is not None:
                 net = float(net)
                 total_net_pct += net
@@ -363,7 +405,7 @@ class ReplayStore:
         active = self.active_trades(episode_id)
         episode = self.get_episode(episode_id)
         unresolved_orders = self.unresolved_limit_orders(episode_id)
-        expired_orders = [event for event in self.list_events(episode_id) if event["event_type"] == "LIMIT_EXPIRED"]
+        expired_orders = [event for event in events if event["event_type"] == "LIMIT_EXPIRED"]
         pending_orders = len(unresolved_orders) if episode.status == "active" else 0
         # V1.7.1 finalization writes LIMIT_EXPIRED explicitly. Legacy V1.7.0
         # closed Episodes may still have unmatched LIMIT_ORDER events instead.
@@ -377,7 +419,15 @@ class ReplayStore:
             "active_trades": len(active),
             "pending_orders": pending_orders,
             "unfilled_orders": unfilled_orders,
+            "invalidated_orders": len(invalidated_orders),
             "total_net_return_pct": total_net_pct,
+            "total_net_pnl": total_net_pnl,
+            "total_fees": total_fees,
+            "starting_account_size": starting_account_size,
+            "ending_account_size": (starting_account_size + total_net_pnl) if starting_account_size is not None else None,
+            "win_rate_pct": (wins / (wins + losses) * 100.0) if (wins + losses) else 0.0,
+            "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
+            "payoff_ratio": ((sum(win_pnls) / len(win_pnls)) / (sum(loss_pnls) / len(loss_pnls))) if win_pnls and loss_pnls else None,
             "average_r": (total_r / r_count) if r_count else None,
             "latest_closed_trade": closed[-1] if closed else None,
         }

@@ -33,7 +33,9 @@ def test_market_long_tp_hit_records_full_trade_outcome(tmp_path: Path) -> None:
     assert closed["price"] == pytest.approx(102.25)
     assert closed["payload"]["gross_return_pct"] > 0
     assert closed["payload"]["net_return_pct"] > 0
-    assert closed["payload"]["r_multiple"] == pytest.approx((102.25 - 102.10) / (102.10 - 101.50))
+    assert closed["payload"]["r_multiple"] == pytest.approx(
+        closed["payload"]["net_pnl"] / closed["payload"]["planned_risk_amount"]
+    )
     assert stepped["trade_summary"]["closed_trades"] == 1
     assert stepped["trade_summary"]["wins"] == 1
     assert stepped["trade_summary"]["active_trades"] == 0
@@ -71,7 +73,9 @@ def test_same_1m_bar_sl_and_tp_is_flagged_and_resolved_conservatively(tmp_path: 
     closed = next(event for event in stepped["trade_events"] if event["event_type"] == "TRADE_CLOSED")
     assert closed["payload"]["exit_reason"] == "AMBIGUOUS_BOTH_HIT"
     assert closed["payload"]["resolution"] == "conservative_stop_assumption"
-    assert closed["price"] == pytest.approx(101.95)
+    assert closed["payload"]["raw_exit_price"] == pytest.approx(101.95)
+    assert closed["price"] == pytest.approx(101.95 * (1 - 0.0002))
+    assert closed["payload"]["risk_overrun_amount"] > 0
     assert stepped["trade_summary"]["ambiguous"] == 1
 
 

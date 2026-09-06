@@ -3,201 +3,107 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Human Trader Replay Lab</title>
-  <link rel="stylesheet" href="/static/styles.css?v=12" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>CoinBacktest Replay</title>
+  <link rel="stylesheet" href="/static/styles.css?v=39" />
 </head>
 <body>
 <div class="app-shell">
   <header class="topbar">
-    <div>
-      <div class="eyebrow">CoinBacktest · Human Trader Replay Lab V1.12</div>
-      <h1>OKX 多标的 · 顺序 Replay / 随机 Replay · ETH/XAU 24/7 / SOXL Session Profile · 界面全部显示北京时间</h1>
-    </div>
-    <div class="top-actions">
-      <span id="causalBadge" class="badge good">CAUSAL</span>
-      <span id="episodeBadge" class="badge">未开始</span>
-    </div>
+    <div class="brand" title="CoinBacktest Replay Lab"><span class="brand-mark">CB</span><span class="brand-copy"><b>Replay</b><small>CoinBacktest</small></span></div>
+    <label class="symbol-picker" aria-label="交易品种"><span class="coin-icon">◆</span><select id="symbol"><option value="ETH-USDT-SWAP">ETHUSDT · OKX</option></select></label>
+    <nav id="timeframeNav" class="timeframe-nav" aria-label="K 线周期">
+      <button data-timeframe="1m">1m</button><button data-timeframe="2m">2m</button><button data-timeframe="5m">5m</button><button data-timeframe="15m">15m</button><button data-timeframe="30m" class="active">30m</button><button data-timeframe="1H">1h</button><button data-timeframe="4H">4h</button><button data-timeframe="1D">D</button>
+    </nav>
+    <div class="top-divider"></div>
+    <button id="indicatorBtn" class="top-action active" type="button" title="当前唯一指标：成交量"><span class="bars-icon">▥</span> Indicators <em>VOL</em></button>
+    <button id="replayModeBtn" class="top-action replay-action" type="button"><span>◀◀</span> Replay</button>
+    <div class="top-spacer"></div><div class="causal-chip"><span></span> CAUSAL</div><button id="newSessionBtn" class="primary-button" type="button">新训练</button>
   </header>
 
   <div class="workspace">
-    <aside class="left-panel panel">
-      <section>
-        <h2>Replay 起点</h2>
-        <label>Symbol
-          <select id="symbol"><option value="">正在读取本地 OKX 1m 表…</option></select>
-          <span class="subtle">只显示 crypto_history.db 里已经存在 1m 数据的标的；切换 Symbol 只影响下一次新建 Episode。</span>
-        </label>
-        <div class="mode-row">
-          <label class="radio"><input type="radio" name="startMode" value="random" />随机</label>
-          <label class="radio"><input type="radio" name="startMode" value="sequential" checked />从日期顺序 Replay</label>
-          <label class="radio"><input type="radio" name="startMode" value="specific" />指定单次起点</label>
-        </div>
-        <div id="randomBlock" class="hidden">
-          <label>随机日期开始<input id="randomStart" type="date" value="2026-05-20" /></label>
-          <label>随机日期结束<input id="randomEnd" type="date" value="2026-08-15" /></label>
-        </div>
-        <div id="sequentialBlock">
-          <label>顺序 Replay 起始日期（北京时间）<input id="sequentialStartDate" type="date" value="2026-01-01" /></label>
-          <label id="sequentialTimeLabel">起始时间（北京时间）<input id="sequentialStartTime" type="time" value="00:00" step="60" /></label>
-          <div id="sequentialHint" class="subtle">ETH/XAU：第一次从所选北京时间开始；之后每次新建 Episode 会从上一 Episode 结束后的下一根可用 1m K 继续，不再随机跳时间。</div>
-        </div>
-        <div id="specificBlock" class="hidden">
-          <label id="specificDateLabel">指定交易日<input id="specificStart" type="date" value="2026-06-30" /></label>
-          <label id="specificDatetimeLabel" class="hidden">指定北京时间起点<input id="specificStartTime" type="datetime-local" step="60" /></label>
-          <div id="sessionProfileHint" class="subtle">SOXL：只在工作日创建 Episode，纽约 07:30 开始，16:00 结束；图表仍保留全部 OKX 盘外上下文。</div>
-        </div>
-        <div id="sourceInfo" class="subtle">正在读取所选 OKX 标的数据覆盖范围…</div>
-        <button id="newEpisodeBtn" class="btn primary full">新建 Episode</button>
-        <div id="sequenceProgress" class="subtle hidden"></div>
-      </section>
-
-      <section>
-        <h2>你的市场判断</h2>
-        <div class="button-grid bias-grid">
-          <button class="btn bias" data-bias="BULLISH">↑ Bullish</button>
-          <button class="btn bias" data-bias="BEARISH">↓ Bearish</button>
-          <button class="btn bias" data-bias="NEUTRAL">↔ Neutral</button>
-          <button class="btn bias" data-bias="UNSURE">? Unsure</button>
-        </div>
-        <div class="subtle">记录当前主图周期；Bias 与 Delivery Target 分开保存。</div>
-      </section>
-
-      <section>
-        <h2>图上标记</h2>
-        <label class="magnet-toggle"><input id="magnetToggle" type="checkbox" checked /> <span>🧲 磁铁：自动吸附当前 K 的 O/H/L/C</span></label>
-        <div id="activePaneInfo" class="active-pane-info">当前图：30m · 前置 Setup</div>
-        <div id="selectedPrice" class="selected-price">在主图点击 K 线附近的价格</div>
-        <label>Liquidity 类型
-          <select id="liquidityKind"><option value="BSL">BSL</option><option value="SSL">SSL</option><option value="OTHER">Other</option></select>
-        </label>
-        <label>重要程度
-          <select id="liquidityImportance"><option value="normal">Normal</option><option value="high">High</option><option value="a_plus">A+</option></select>
-        </label>
-        <label>共享水平线名称（可选）<input id="markerLabel" placeholder="例如：关键 defended low" /></label>
-        <div class="button-grid">
-          <button id="markLiquidityBtn" class="btn">标 Liquidity</button>
-          <button id="markTargetBtn" class="btn">标 Delivery Target</button>
-          <button id="markLineBtn" class="btn">共享水平线</button>
-          <button id="setSlBtn" class="btn danger-soft">设 SL</button>
-          <button id="setTpBtn" class="btn success-soft">设 TP</button>
-        </div>
-        <div class="subtle share-note">所有水平标记跨周期共享；同时保留创建它时的 source timeframe、anchor time，以及是否点在形成中的 K 线上。</div>
-      </section>
+    <aside id="drawingToolbar" class="drawing-toolbar" aria-label="绘图工具">
+      <button class="tool active" data-tool="cursor" title="光标 / 选择 (Esc)" aria-label="光标选择"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="2"/></svg></button>
+      <div class="tool-separator"></div>
+      <button class="tool" data-tool="trend" title="线段（按住 Shift 画水平线）" aria-label="线段"><svg viewBox="0 0 24 24"><path d="M5 18 19 6"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/></svg></button>
+      <button class="tool" data-tool="horizontal-ray" title="水平射线" aria-label="水平射线"><svg viewBox="0 0 24 24"><path d="M4 12h15M15 8l4 4-4 4"/><circle cx="4" cy="12" r="2"/></svg></button>
+      <button class="tool" data-tool="ray" title="射线" aria-label="射线"><svg viewBox="0 0 24 24"><path d="M5 18 19 5M13 5h6v6"/><circle cx="5" cy="18" r="2"/></svg></button>
+      <button class="tool" data-tool="rectangle" title="矩形（8 个拖拽点）" aria-label="矩形"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/><circle cx="5" cy="5" r="1.4"/><circle cx="19" cy="5" r="1.4"/><circle cx="5" cy="19" r="1.4"/><circle cx="19" cy="19" r="1.4"/></svg></button>
+      <button class="tool" data-tool="vertical" title="垂直线" aria-label="垂直线"><svg viewBox="0 0 24 24"><path d="M12 3v18M8 5h8M8 19h8"/></svg></button>
+      <button class="tool" data-tool="ruler" title="尺子：测量价格、百分比与 K 线数" aria-label="尺子"><svg viewBox="0 0 24 24"><path d="m5 17 12-12 3 3L8 20 5 17Z"/><path d="m10 12 2 2m1-5 2 2m-8 4 2 2"/></svg></button>
+      <div class="tool-separator"></div>
+      <button class="tool position-tool long" data-tool="long-position" title="Long Position" aria-label="Long Position"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M5 11h14M12 7v10"/></svg><small>L</small></button>
+      <button class="tool position-tool short" data-tool="short-position" title="Short Position" aria-label="Short Position"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M5 13h14M12 7v10"/></svg><small>S</small></button>
+      <button class="tool" data-tool="callout" title="Callout 标注" aria-label="Callout"><svg viewBox="0 0 24 24"><path d="M5 5h14v11H10l-5 4V5Z"/><path d="M8 9h8m-8 3h5"/></svg></button>
+      <div class="tool-spacer"></div>
+      <button id="magnetToggle" class="tool toggle magnet-tool active" data-tool-action="magnet" data-magnet-mode="weak" title="弱磁：靠近当前 K 线 OHLC 时吸附（点击切换）" aria-label="弱磁：靠近当前 K 线 OHLC 时吸附" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M6 4v9a6 6 0 0 0 12 0V4M6 8h4m4 0h4"/></svg><small id="magnetModeBadge">弱</small></button>
+      <button id="lockToggle" class="tool toggle" data-tool-action="lock" title="锁定全部绘图" aria-label="锁定绘图" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
+      <button id="trashBtn" class="tool danger" data-tool-action="trash" title="一次删除全部绘图" aria-label="清空全部绘图"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m3 4v5m4-5v5"/></svg></button>
     </aside>
 
-    <main class="center-panel">
-      <div class="chart-head panel">
-        <div>
-          <div id="cursorTime" class="cursor-time">等待 Episode</div>
-          <div id="clockInfo" class="clock-info">OKX · 北京时间显示 · 等待 Episode</div>
-          <div id="chartMeta" class="subtle">高周期会显示正在形成中的 K；其 OHLC 只由 cursor 前已关闭的 1m 构成</div>
+    <main class="chart-column">
+      <section class="chart-stage">
+        <div class="chart-legend">
+          <div class="instrument-line"><span class="coin-icon small">◆</span><b id="instrumentName">ETHUSDT Perpetual Swap Contract</b><span>·</span><span id="activeTimeframeLabel">30</span><span>· OKX</span><span id="formingBadge" class="forming-badge">等待训练</span></div>
+          <div id="ohlcLine" class="ohlc-line">O — &nbsp; H — &nbsp; L — &nbsp; C —</div>
+          <div class="volume-legend">Vol · USDT <b id="volumeValue">—</b></div>
         </div>
-        <div class="legend-inline">
-          <span><i class="dot setup"></i>Setup</span><span><i class="dot exec"></i>Execution</span><span><i class="dot forming"></i>形成中 K</span><span><i class="dot shared"></i>共享标记</span>
-        </div>
-      </div>
-
-      <section class="timeframe-switcher panel" aria-label="主图快捷周期">
-        <div class="tf-slot-block">
-          <div class="tf-slot-row" id="timeframeSlots" aria-label="6 个可自定义快捷周期">
-            <div class="tf-slot active" data-slot="0"><span class="tf-slot-no">1</span><select class="tf-slot-select" data-slot="0" aria-label="快捷周期 1"></select><small class="tf-slot-role">前置 Setup</small></div>
-            <div class="tf-slot" data-slot="1"><span class="tf-slot-no">2</span><select class="tf-slot-select" data-slot="1" aria-label="快捷周期 2"></select><small class="tf-slot-role">前置 Setup</small></div>
-            <div class="tf-slot" data-slot="2"><span class="tf-slot-no">3</span><select class="tf-slot-select" data-slot="2" aria-label="快捷周期 3"></select><small class="tf-slot-role">上下文</small></div>
-            <div class="tf-slot" data-slot="3"><span class="tf-slot-no">4</span><select class="tf-slot-select" data-slot="3" aria-label="快捷周期 4"></select><small class="tf-slot-role">执行</small></div>
-            <div class="tf-slot" data-slot="4"><span class="tf-slot-no">5</span><select class="tf-slot-select" data-slot="4" aria-label="快捷周期 5"></select><small class="tf-slot-role">执行</small></div>
-            <div class="tf-slot" data-slot="5"><span class="tf-slot-no">6</span><select class="tf-slot-select" data-slot="5" aria-label="快捷周期 6"></select><small class="tf-slot-role">上下文</small></div>
+        <div id="chartWrap" class="chart-wrap">
+          <canvas id="chartCanvas" aria-label="ETHUSDT K 线图"></canvas><div id="crosshairTooltip" class="crosshair-tooltip hidden"></div>
+          <button id="autoScaleBtn" class="axis-control active" type="button" aria-pressed="true" title="自动坐标开启时锁定纵向平移与缩放">自动</button>
+          <button id="returnToCurrentBtn" class="return-to-current" type="button" disabled aria-label="回到当前回放时间" title="回到当前回放时间（保留缩放）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 7 7-7 7m6-14 7 7-7 7" /></svg></button>
+          <div id="drawingEditBar" class="drawing-edit-bar hidden" role="toolbar" aria-label="选中绘图设置">
+            <button id="colorPaletteBtn" class="drawing-color" type="button" title="预设颜色"><span></span></button><input id="drawingColor" class="native-color" type="color" value="#7fa8f2" tabindex="-1" aria-hidden="true" />
+            <div id="colorPalette" class="color-palette hidden" aria-label="预设颜色"></div>
+            <select id="drawingWidth" title="线条粗细" aria-label="线条粗细"><option value="1">1px</option><option value="2" selected>2px</option><option value="3">3px</option><option value="4">4px</option></select>
+            <button id="drawingLockBtn" type="button" title="锁定当前绘图"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
+            <button id="drawingDeleteBtn" type="button" title="删除当前绘图" class="danger"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m3 4v5m4-5v5"/></svg></button>
           </div>
-          <div class="subtle tf-slot-hint">6 个槽位都可以直接改周期。设置会保存在当前浏览器；Fit、新建 Episode、切换 Symbol、切去其它槽位再回来都不会重置。</div>
+          <div id="emptyState" class="empty-state"><span>◀◀</span><b>开始一次盲测训练</b><small>选择起点后，未来 K 线会被隐藏</small><button id="emptyStartBtn" type="button">选择 Replay 起点</button></div>
+          <div id="drawingHint" class="drawing-hint hidden"></div>
         </div>
-        <div class="tf-more tf-actions">
-          <button class="pane-fit btn" data-pane="main" title="只恢复图表缩放/位置，不改变当前周期或 6 个快捷槽位">Fit</button>
-          <button id="resetTimeframeSlotsBtn" class="btn ghost" type="button" title="恢复默认 30m / 15m / 5m / 2m / 1m / 4H">重置6周期</button>
-        </div>
+        <div class="rangebar"><div class="range-presets"><button data-visible="90">1D</button><button data-visible="160">5D</button><button data-visible="240">1M</button><button data-visible="360">3M</button><button data-visible="520">6M</button><button data-visible="700">All</button></div><button id="fitChartBtn" class="fit-button" type="button">Fit chart</button><label class="timezone-control"><select id="chartTimezone" aria-label="图表时区"><option value="beijing">北京时间</option><option value="new_york">纽约时间</option></select></label><span id="cursorClock" class="cursor-clock">北京时间 —</span></div>
       </section>
 
-      <section id="chartGrid" class="chart-grid single-chart-grid">
-        <article class="chart-card panel active main-chart-card" data-pane="main">
-          <div class="pane-head">
-            <div><b id="mainChartRole">前置 Setup</b><small id="meta-main">30m</small></div>
-            <div id="formingStatus" class="forming-status">等待行情</div>
-          </div>
-          <div class="chart-wrap main-chart-wrap" id="wrap-main"><canvas id="canvas-main"></canvas><div class="crosshair-info hidden" id="crosshair-main"></div></div>
-        </article>
-      </section>
-
-      <section class="replay-panel panel">
-        <div class="replay-controls">
-          <span class="replay-group-label">回退</span>
-          <button id="rewind15Btn" class="btn rewind">−15m</button><button id="rewind5Btn" class="btn rewind">−5m</button><button id="rewind1Btn" class="btn rewind">−1m</button>
-          <span class="replay-divider"></span>
-          <span class="replay-group-label">前进</span>
-          <button id="step1Btn" class="btn">+1m</button><button id="step2Btn" class="btn">+2m</button><button id="step5Btn" class="btn">+5m</button><button id="step15Btn" class="btn">+15m</button><button id="step30Btn" class="btn">+30m</button><button id="step60Btn" class="btn">+60m</button>
-          <button id="playBtn" class="btn primary">▶ 自动播放</button>
-          <label class="speed-label">速度<select id="playSpeed"><option value="slow">慢</option><option value="normal" selected>正常</option><option value="fast">快</option><option value="veryfast">很快</option></select></label>
-        </div>
-        <div class="rewind-note">回退会建立新的 Replay 分支：目标时间之后的旧标注、挂单和成交会归档，不再影响当前轨迹；导出 JSON 仍保留 discarded_events。</div>
-      </section>
-
-      <section class="order-ticket panel">
-        <div class="order-ticket-head">
-          <div><b>下单计划</b><span>挂单价格 / SL / TP 都可以手输，也可以从图上选中价快速填入。</span></div>
-          <label class="order-mode-label">开仓方式<select id="orderType"><option value="limit" selected>LIMIT 挂单</option><option value="market">MARKET 市价</option></select></label>
-        </div>
-        <div class="order-ticket-grid">
-          <label>挂单价格 Entry
-            <input id="entryPriceInput" type="number" inputmode="decimal" step="0.0001" min="0" placeholder="例如 134.72" />
-          </label>
-          <label>止损 SL
-            <input id="slPriceInput" type="number" inputmode="decimal" step="0.0001" min="0" placeholder="例如 133.90" />
-          </label>
-          <label>止盈 TP
-            <input id="tpPriceInput" type="number" inputmode="decimal" step="0.0001" min="0" placeholder="例如 137.20" />
-          </label>
-        </div>
-        <div class="selected-to-ticket">
-          <span id="ticketSelectedPrice">当前图上选中价：-</span>
-          <button id="fillEntryBtn" class="btn compact">选中价 → Entry</button>
-          <button id="fillSlBtn" class="btn compact danger-soft">选中价 → SL</button>
-          <button id="fillTpBtn" class="btn compact success-soft">选中价 → TP</button>
-          <button id="clearTicketBtn" class="btn compact">清空价格</button>
-        </div>
-        <div class="order-hint">LIMIT 挂单未成交前，Entry/SL/TP 会作为一组待成交计划显示在图上；成交后 SL/TP 自动转成当前持仓保护线。ETH/XAU 24/7 模式下，TP 或 SL 命中后会自动结束并汇总 Episode。</div>
-        <div class="trade-actions ticket-trade-actions">
-          <button id="longBtn" class="trade long">挂多 LONG</button><button id="shortBtn" class="trade short">挂空 SHORT</button><button id="cancelOrderBtn" class="trade cancel">撤销挂单</button><button id="closeTradeBtn" class="trade flat">FLAT</button>
-        </div>
-      </section>
-
-      <section class="decision-strip panel">
-        <div class="decision-left">
-          <button id="watchBtn" class="decision watch">◎ 开始关注</button><button id="waitBtn" class="decision">… 继续等</button><button id="skipBtn" class="decision">× Skip</button><button id="invalidateBtn" class="decision danger">⚠ Invalid</button>
-        </div>
+      <section id="replayBar" class="replay-bar">
+        <div class="replay-title"><span>◀◀</span><b>Replay Trading</b><small id="episodeLabel">未开始</small></div>
+        <div class="replay-controls"><button id="rewindBtn" class="icon-button" type="button" title="回退 1 根 1m K">│◀</button><button id="playBtn" class="play-button" type="button" title="播放 / 暂停（Space）；Esc 暂停；→ 下一根；← 回退">▶</button><button id="stepBtn" class="icon-button" type="button" title="前进">▶│</button><label class="speed-control" title="每根 K 线后的等待时间；实际速度还受行情加载耗时影响">速度<select id="playSpeed"><option value="1000" selected>1 秒 / 根</option><option value="500">0.5 秒 / 根</option><option value="250">0.25 秒 / 根</option><option value="160">0.16 秒 / 根</option><option value="80">0.08 秒 / 根</option><option value="40">0.04 秒 / 根</option><option value="16">极速</option></select></label><label class="step-control">步长<select id="stepSize"><option value="1">1m</option><option value="2">2m</option><option value="5" selected>5m</option><option value="15">15m</option><option value="30">30m</option><option value="60">1h</option></select></label><button id="jumpStepBtn" class="text-button" type="button">前进 <span id="stepSizeLabel">5m</span></button><label class="event-pause-control"><input id="pauseOnEvent" type="checkbox" checked />成交 / 退出暂停</label></div>
+        <div class="replay-status"><span id="saveDot"></span><span id="statusText">数据会自动保存到本地</span></div>
       </section>
     </main>
 
-    <aside class="right-panel panel">
-      <section>
-        <div class="section-title-row"><h2>Decision Timeline</h2><button id="exportBtn" class="link-btn">导出 JSON</button></div>
-        <div id="timeline" class="timeline empty">建立 Episode 后，所有操作都会自动记录。Liquidity / Target / 共享线可在这里直接删除。</div>
+    <aside class="summary-panel">
+      <div class="summary-head"><div><span class="eyebrow">TRAINING ACCOUNT</span><h2>Replay Summary</h2></div><button id="exportBtn" class="ghost-button" type="button" title="导出当前 Episode JSON">导出</button></div>
+      <section id="tradeTicket" class="trade-ticket">
+        <div class="ticket-head"><div><span class="eyebrow">SIMULATED ORDER</span><h3>模拟交易</h3></div><span id="tradeTicketSource" class="ticket-source">手动输入</span></div>
+        <div class="ticket-tabs" role="tablist" aria-label="委托类型"><button type="button" data-ticket-order="limit" class="active">限价委托</button><button type="button" data-ticket-order="market">市价委托</button></div>
+<details id="setupChecklist" class="setup-checklist"><summary>InterEquity · 入场前流动性计划</summary><p>记录你的判断；随下单保存到交易记录。图表标注可用水平射线、矩形和 Callout。</p><div class="setup-grid"><label>Breakout<select id="breakoutLiquidity"><option value="unassessed">待判断</option><option value="swept">判断已扫</option><option value="remaining">判断仍有</option><option value="not_applicable">不适用</option></select></label><label>Break & retest<select id="retestLiquidity"><option value="unassessed">待判断</option><option value="swept">判断已扫</option><option value="remaining">判断仍有</option><option value="not_applicable">不适用</option></select></label><label>Trend line<select id="trendLiquidity"><option value="unassessed">待判断</option><option value="swept">判断已扫</option><option value="remaining">判断仍有</option><option value="not_applicable">不适用</option></select></label><label>SMC<select id="smcLiquidity"><option value="unassessed">待判断</option><option value="swept">判断已扫</option><option value="remaining">判断仍有</option><option value="not_applicable">不适用</option></select></label></div><label>扫哪一侧？目标流动性 / liquidity block 在哪？<textarea id="setupNotes" rows="3" maxlength="1000" placeholder="例如：低点下方的几类止损已扫；目标为上方未扫高点；若跌破标记的 block 则假设失效。"></textarea></label></details>
+        <form id="positionForm" novalidate>
+          <input id="entryType" type="hidden" value="limit" />
+          <div class="ticket-price-row"><label>价格 <small>USDT</small><input id="entryPrice" type="number" min="0" step="any" required /></label><button id="useMarketPriceBtn" type="button">最新价</button></div>
+          <div id="executionPreview" class="execution-preview">Replay 可执行价 —</div>
+          <div class="ticket-bracket-grid"><label>止损 <small>SL</small><input id="stopPrice" type="number" min="0" step="any" required /></label><label>止盈 <small>TP</small><input id="takePrice" type="number" min="0" step="any" required /></label></div>
+          <div class="ticket-risk-grid"><label>Account Size <small>USDT</small><input id="positionAccount" type="number" min="1" step="any" value="10000" /></label><label>Risk <small>%</small><input id="riskPct" type="number" min="0.01" max="100" step="any" value="1" /></label></div>
+          <div class="ticket-preview"><div><span>价格风险（1R）</span><b id="plannedRisk">$100.00</b></div><div><span>SL 预计净亏</span><b id="stopNetLoss">—</b></div><div><span>预计数量</span><b id="estimatedQty">— ETH</b></div><div><span>净目标 R:R</span><b id="targetRR">2.00</b></div></div>
+          <div class="ticket-actions"><button type="button" data-open-side="LONG" class="open-long"><span>↗</span> 开多</button><button type="button" data-open-side="SHORT" class="open-short"><span>↘</span> 开空</button></div>
+          <p class="ticket-rule">1R 仅按 Entry → SL 价差计算仓位；开仓/平仓手续费与止损滑点均为额外开支。挂单 / TP：0.02%，无滑点 · 市价 / SL：0.05%，默认 0.02% 滑点。</p>
+        </form>
       </section>
-      <section>
-        <h2>一句话备注</h2>
-        <textarea id="noteText" rows="4" placeholder="例如：30m 上方 BSL 是目标；扫完后 1m 这个 MSS 太小，继续等。"></textarea>
-        <button id="saveNoteBtn" class="btn full">保存 Note</button>
-      </section>
-      <section class="current-state">
-        <h2>当前记录</h2>
-        <div class="state-row"><span>Chart</span><b id="currentChart">30m · 前置 Setup</b></div><div class="state-row"><span>Bias</span><b id="currentBias">-</b></div><div class="state-row"><span>Target</span><b id="currentTarget">-</b></div><div class="state-row"><span>Position</span><b id="currentPosition">Flat</b></div><div class="state-row"><span>Pending</span><b id="currentPending">-</b></div><div class="state-row"><span>SL</span><b id="currentSl">-</b></div><div class="state-row"><span>TP</span><b id="currentTp">-</b></div>
-      </section>
-      <section class="trade-outcome">
-        <h2>交易结果</h2>
-        <div class="outcome-grid"><div><span>Closed</span><b id="outcomeClosed">0</b></div><div><span>Win</span><b id="outcomeWins">0</b></div><div><span>Loss</span><b id="outcomeLosses">0</b></div><div><span>Ambig.</span><b id="outcomeAmbiguous">0</b></div></div>
-        <div id="latestOutcome" class="latest-outcome">还没有已结束交易。</div>
-        <div class="autosave-note">每个标记、挂单、成交和结果都会<strong>立即写入 SQLite</strong>。结束 Episode 不是“保存按钮”，而是生成最终汇总并把本 Episode 标记为 closed。</div>
-      </section>
-      <section><button id="endEpisodeBtn" class="btn danger-soft full">结束 Episode · 生成最终汇总</button><div id="status" class="status">准备就绪</div></section>
+      <section class="account-card"><label for="accountInput">Account Size <span>USDT</span></label><div class="account-input-row"><span>$</span><input id="accountInput" type="number" min="1" step="any" value="10000" /><button id="applyAccountBtn" type="button">更新</button></div><div class="equity-row"><div><small>当前权益</small><b id="equityValue">$10,000.00</b></div><div id="pnlValue" class="pnl neutral">$0.00</div></div><div class="equity-track"><i id="equityTrack"></i></div><div class="fee-note">挂单 / 止盈 0.02% · 市价 0.05% · 市价滑点 0.02%</div></section>
+      <section class="metrics-grid"><div><span>净利润</span><b id="netProfitMetric">$0.00</b></div><div><span>胜率</span><b id="winRateMetric">—</b></div><div><span>盈亏比</span><b id="payoffMetric">—</b></div><div><span>平均 R</span><b id="avgRMetric">—</b></div><div><span>交易次数</span><b id="tradeCountMetric">0</b></div><div><span>手续费 / 滑点</span><b id="feesMetric">$0.00 / $0.00</b></div></section>
+      <section class="summary-section"><div class="section-title"><h3>当前订单</h3><span id="openCount">0</span></div><div id="activePlans" class="card-list empty-list">还没有挂单或持仓。可从 Position 计划的 ＋ 载入，或直接使用上方模拟交易。</div></section>
+      <section class="summary-section trade-history-section"><div class="section-title"><h3>交易记录</h3><button id="resetStatsBtn" class="link-button" type="button">重置账户统计</button></div><div id="tradeLog" class="trade-log empty-list">成交结果和自动失效的挂单会记录在这里。</div></section>
+      <div class="summary-footer"><span><i></i> SQLite + Browser Local</span><button id="endEpisodeBtn" type="button">结束本次训练</button></div>
     </aside>
   </div>
 </div>
-<script src="/static/app.js?v=22"></script>
+
+<dialog id="startDialog" class="modal">
+  <form id="startForm" method="dialog"><div class="modal-head"><div><span class="eyebrow">BLIND REPLAY</span><h2>开始新训练</h2></div><button type="button" class="modal-close" data-dialog-close aria-label="关闭">×</button></div><p>起点之后的行情不会提前显示。“从日期”始终使用下方起点；接续上次请单独选择。起点输入使用北京时间。</p><label>开始方式<select id="startMode"><option value="sequential" selected>从日期顺序 Replay</option><option value="specific">指定单次起点</option><option value="random">随机盲测</option><option id="continueOption" value="continue" disabled>接续上次已结束的训练</option></select></label><label id="startDatetimeRow">北京时间起点<input id="startDatetime" type="datetime-local" step="60" value="2026-08-01T00:00" /></label><div id="randomRows" class="two-columns hidden"><label>随机开始<input id="randomStart" type="date" value="2026-05-20" /></label><label>随机结束<input id="randomEnd" type="date" value="2026-08-15" /></label></div><div id="coverageInfo" class="info-box">正在读取本地行情覆盖范围…</div><div class="modal-actions"><button type="button" class="secondary-button" data-dialog-close>取消</button><button id="createEpisodeBtn" class="primary-button" value="default">开始 Replay</button></div></form>
+</dialog>
+
+<dialog id="calloutDialog" class="modal compact-modal"><form id="calloutForm" method="dialog"><div class="modal-head"><h2>Callout</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭">×</button></div><label>标注文字<textarea id="calloutText" rows="3" maxlength="160" placeholder="记录这里为什么重要…" required></textarea></label><div class="modal-actions"><button type="button" class="secondary-button" data-dialog-close>取消</button><button id="saveCalloutBtn" class="primary-button" value="default">放到图上</button></div></form></dialog>
+
+<script src="/static/app.js?v=67"></script>
 </body>
 </html>

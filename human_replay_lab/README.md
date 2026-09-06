@@ -1,4 +1,86 @@
-# Human Trader Replay Lab V1.11
+# Human Trader Replay Lab · Trading Replay UI
+
+## InterEquity manual practice improvements (2026-09-06)
+
+These additions follow the user's description of InterEquity's method, rather
+than an independently verified interpretation of the paid course.
+
+- The replay bar defaults to a one-second wait between bars, retains faster
+  settings, and remembers playback speed. Space plays/pauses, Escape pauses,
+  and Left/Right rewind/advance by the chart timeframe. Inputs and dialogs do
+  not trigger playback shortcuts. Opening a new training dialog, focusing the
+  ticket, changing timeframe, rewinding, or hiding the tab pauses playback.
+- **成交 / 退出暂停** is enabled by default. A large step stops at the first
+  observed fill, bracket exit, or order invalidation, using closed 1m bars.
+  This is distinct from the end of available data. Uncheck it to process the
+  full step as before. The API retains its old default unless
+  `pause_on_event: true` is sent to the step route.
+- **从日期顺序 Replay** always respects the entered Beijing start time.
+  **接续上次已结束的训练** explicitly continues a closed same-symbol episode.
+- The chart axis, candle tooltip, and replay clock support Beijing/New York
+  display. Start inputs and trade-history timestamps remain explicitly in
+  Beijing time; stored times and execution logic do not change.
+- Expand **InterEquity · 入场前流动性计划** in the order ticket. Record your
+  assessment of breakout, break-and-retest, trend-line, and SMC liquidity,
+  plus the swept side, opposite target, and invalidating liquidity block.
+  Drafts persist per episode in this browser. Each submitted limit/market
+  order captures the plan in SQLite `entry_context.setup`; completed trades
+  show it under **入场前计划**, and episode JSON includes it. These are manual
+  hypotheses, not automatic evidence that actual stops have been exhausted.
+- History pagination is clamped at the episode cursor. Stale history responses
+  are ignored after a cursor, timeframe, or episode change.
+
+Suggested practice: mark the candidate stop pools with rays/trend lines, mark
+the liquidity block with a rectangle, write the thesis before entering, and
+then replay through the trade. Compare the original plan against the outcome.
+Repeated rewinds are useful for study, but should be kept separate from a
+first-pass evaluation of the strategy.
+
+Compared with a full TradingView workspace, useful next steps are synchronized
+multi-pane charts, named drawing templates (liquidity type / block / target),
+and server-backed drawing snapshots attached to entries. Current custom
+drawings and cross-episode account aggregates still use browser local storage;
+the JSON export is not yet a complete portable chart workspace. The existing
+fixed SL/TP simulator still excludes the limit-fill bar from exit detection
+and resolves same-bar SL/TP conservatively; 1m OHLC cannot establish tick order.
+
+Validation:
+
+```powershell
+conda run -n crypto python -B -m pytest human_replay_lab/tests/human_replay_lab tests/replay_lab/test_vectorized_fast_forward.py -q -p no:cacheprovider
+node --test human_replay_lab/tests/test_replay_controls.cjs
+```
+
+The broader `tests/replay_lab` directory also includes older UI contracts for
+SOXL defaults, six editable timeframe slots, and previous playback controls;
+those contracts currently disagree with the existing single-chart trainer.
+
+## TradingView-style training workspace (2026-08)
+
+The default workspace is now a focused TradingView-style replay trainer for
+local OKX data. It defaults to `ETH-USDT-SWAP` and provides:
+
+- `1m / 2m / 5m / 15m / 30m / 1H / 4H / 1D` chart switching with volume;
+- magnet, lock, delete, ruler, trend line (hold Shift for horizontal),
+  horizontal ray, ray, rectangle, vertical line, long/short position and
+  callout tools;
+- causal replay stepping, autoplay and branch-aware rewind;
+- risk-sized positions (1% default), account equity, P&L, win rate, payoff
+  ratio, average R and fee tracking;
+- 0.02% limit/TP fees, 0.05% market/SL fees, no limit slippage and 0.02%
+  adverse market slippage;
+- SQLite trade/event persistence plus browser-local account, drawing and UI
+  preferences. Refreshing the page restores the last Episode.
+
+Run from the repository root:
+
+```bash
+python human_replay_lab/server.py --host 127.0.0.1 --port 8775
+```
+
+Then open `http://127.0.0.1:8775`.
+
+---
 
 Multi-symbol OKX manual-trader replay capture tool for CoinBacktest.
 

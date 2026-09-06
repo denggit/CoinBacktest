@@ -26,8 +26,12 @@ from human_replay_lab.store import ReplayStore  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_STORE = PROJECT_ROOT / "data" / "human_replay_lab" / "replay.sqlite3"
-DEFAULT_ROUND_TRIP_FEE_RATE = 0.0011
-EPISODE_ROUTE = re.compile(r"^/api/episodes/([a-f0-9]{12})(?:/(snapshot|snapshots|step|rewind|events|delete-annotation|annotation-line|trade|cancel-order|close|export))?$")
+DEFAULT_LIMIT_FEE_RATE = 0.0002
+DEFAULT_MARKET_FEE_RATE = 0.0005
+DEFAULT_MARKET_SLIPPAGE_RATE = 0.0002
+DEFAULT_RISK_PCT = 1.0
+DEFAULT_ACCOUNT_SIZE = 10_000.0
+EPISODE_ROUTE = re.compile(r"^/api/episodes/([a-f0-9]{12})(?:/(snapshot|snapshots|history|step|rewind|events|delete-annotation|annotation-line|trade|update-order|cancel-order|close|export))?$")
 
 
 class ReplayApplication:
@@ -106,7 +110,8 @@ class ReplayApplication:
                 "chart_context": "all_available_okx_bars",
                 "symbol": symbol,
                 "session_profile": self.data.session_profile(symbol),
-                "auto_close_on_bracket_exit": is_24x7,
+                "auto_close_on_bracket_exit": False,
+                "continue_after_bracket_exit": True,
                 "sequential_mode": mode == "sequential",
                 "previous_episode_id": previous_episode_id,
                 "sequence_policy": "next_available_1m_after_previous_close" if (mode == "sequential" and is_24x7) else ("next_available_weekday_0730_et" if mode == "sequential" else None),
@@ -147,6 +152,13 @@ class ReplayApplication:
             raise ValueError("at most 8 chart timeframes are allowed")
         return cleaned
 
+    def _execution_price_for(self, episode: Any) -> float | None:
+        """Return the causal cursor 1m Open exposed to market-order previews."""
+        try:
+            return float(self.data.execution_open(episode.symbol, episode.cursor_time))
+        except (KeyError, ValueError):
+            return None
+
     def snapshots(self, episode_id: str, timeframes: list[str], limit: int) -> dict[str, Any]:
         episode = self.store.get_episode(episode_id)
         if episode.status == "active":
@@ -157,12 +169,20 @@ class ReplayApplication:
         return {
             "episode": asdict(episode),
             "clock": self.data.clock_info(episode.cursor_time, episode.symbol),
+            "execution_price": self._execution_price_for(episode),
             "charts": {tf: {"timeframe": tf, "source": w.source, "bars": w.bars} for tf, w in windows.items()},
             "events": self._ui_events(self.store.list_events(episode_id)),
             "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
             "active_trades": self.store.active_trades(episode_id),
             "trade_summary": self.store.trade_summary(episode_id),
         }
+
+    def history(self, episode_id: str, timeframe: str, before: str, limit: int) -> dict[str, Any]:
+        episode = self.store.get_episode(episode_id)
+        if not before:
+            raise ValueError("before is required")
+        boundary = min(pd.Timestamp(before), pd.Timestamp(episode.cursor_time))
+        return self.data.historical_candles(episode.symbol, timeframe, boundary, limit)
 
     def _next_lifecycle_cursor(
         self,
@@ -181,6 +201,13 @@ class ReplayApplication:
         if target <= cursor:
             return None
         episode = self.store.get_episode(episode_id)
+        active_orders = self.store.active_limit_orders(episode_id)
+        active_trades = self.store.active_trades(episode_id)
+        # The common chart-only path never descends into the cached 1m frame.
+        # One-minute ordering is activated only while an entry/SL/TP level could
+        # occur inside the requested higher-timeframe step.
+        if not active_orders and not active_trades:
+            return None
         bars = self.data.closed_1m_frame(episode.symbol, cursor, target)
         if bars.empty:
             return None
@@ -189,7 +216,7 @@ class ReplayApplication:
 
         # Resting limits: each order is evaluated as a vector mask over the one
         # cached chunk; only the first touched bar is relevant.
-        for order in self.store.active_limit_orders(episode_id):
+        for order in active_orders:
             payload = order.get("payload") or {}
             side = str(payload.get("side") or "").upper()
             if side not in {"LONG", "SHORT"} or order.get("price") is None:
@@ -200,16 +227,23 @@ class ReplayApplication:
                 continue
             price = float(order["price"])
             if side == "LONG":
-                mask = (rows["open"].astype(float) <= price) | (rows["low"].astype(float) <= price)
+                entry_mask = (rows["open"].astype(float) <= price) | (rows["low"].astype(float) <= price)
             else:
-                mask = (rows["open"].astype(float) >= price) | (rows["high"].astype(float) >= price)
+                entry_mask = (rows["open"].astype(float) >= price) | (rows["high"].astype(float) >= price)
+            take = self._optional_price(payload, "take_profit")
+            if take is None:
+                mask = entry_mask
+            elif side == "LONG":
+                mask = entry_mask | (rows["open"].astype(float) >= take) | (rows["high"].astype(float) >= take)
+            else:
+                mask = entry_mask | (rows["open"].astype(float) <= take) | (rows["low"].astype(float) <= take)
             hits = rows.index[mask.to_numpy()]
             if len(hits):
                 candidates.append(pd.Timestamp(hits[0]) + pd.Timedelta(minutes=1))
 
         # Open trades: find the first bar touching either current bracket.  The
         # existing close routine still resolves simultaneous SL+TP conservatively.
-        for trade in self.store.active_trades(episode_id):
+        for trade in active_trades:
             payload = trade.get("payload") or {}
             side = str(payload.get("side") or "").upper()
             if side not in {"LONG", "SHORT"}:
@@ -242,17 +276,17 @@ class ReplayApplication:
 
         return min(candidates) if candidates else None
 
-    def step(self, episode_id: str, minutes: int, timeframes: list[str] | None = None) -> dict[str, Any]:
+    def step(self, episode_id: str, minutes: int, timeframes: list[str] | None = None, *, pause_on_event: bool = False) -> dict[str, Any]:
         episode = self.store.get_episode(episode_id)
         if episode.status != "active":
             raise ValueError("episode is not active")
         cleaned = self._clean_timeframes(timeframes or ["30m", "15m", "2m", "1m"])
-        minutes = max(1, min(int(minutes), 240))
+        minutes = max(1, min(int(minutes), 1440))
         old_cursor = pd.Timestamp(episode.cursor_time)
         target = self.data.fast_forward_target(episode.symbol, old_cursor, minutes)
         cursor = old_cursor
         trade_events: list[dict[str, Any]] = []
-        bracket_closed = False
+        trade_closed = False
         scan_passes = 0
 
         # +1m stays on the minimal direct path so normal autoplay does not pay
@@ -267,7 +301,7 @@ class ReplayApplication:
             minute_events.extend(self._process_trade_exits(episode_id, cursor, target))
             trade_events.extend(minute_events)
             cursor = target
-            bracket_closed = any(
+            trade_closed = any(
                 event.get("event_type") == "TRADE_CLOSED"
                 and str((event.get("payload") or {}).get("exit_reason") or "")
                 in {"TAKE_PROFIT", "STOP_LOSS", "AMBIGUOUS_BOTH_HIT"}
@@ -287,15 +321,14 @@ class ReplayApplication:
                 trade_events.extend(minute_events)
                 cursor = boundary
 
-                bracket_closed = any(
+                trade_closed = trade_closed or any(
                     event.get("event_type") == "TRADE_CLOSED"
                     and str((event.get("payload") or {}).get("exit_reason") or "")
                     in {"TAKE_PROFIT", "STOP_LOSS", "AMBIGUOUS_BOTH_HIT"}
                     for event in minute_events
                 )
-                if bracket_closed and self.data.auto_close_on_bracket_exit(episode.symbol):
+                if pause_on_event and minute_events:
                     break
-
         advanced = max(0, int((cursor - old_cursor) / pd.Timedelta(minutes=1)))
         if advanced:
             episode = self.store.update_cursor(episode_id, cursor)
@@ -304,24 +337,24 @@ class ReplayApplication:
             if advanced
             else {tf: [] for tf in cleaned}
         )
-        auto_finalized = False
-        if bracket_closed and self.data.auto_close_on_bracket_exit(episode.symbol) and not self.store.active_trades(episode_id):
-            finalized = self._finalize_episode(episode_id, reason="bracket_exit_auto", finalized_by="tp_sl_auto")
-            episode = finalized["episode"]
-            trade_events.extend(finalized["finalization_events"])
-            auto_finalized = True
         return {
             "episode": asdict(episode),
             "clock": self.data.clock_info(episode.cursor_time, episode.symbol),
+            "execution_price": self._execution_price_for(episode),
             "updates": updates,
             "trade_events": self._ui_events(trade_events),
             "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
             "active_trades": self.store.active_trades(episode_id),
             "trade_summary": self.store.trade_summary(episode_id),
             "advanced_minutes": advanced,
-            "at_data_end": advanced < minutes and not auto_finalized,
-            "auto_finalized": auto_finalized,
+            "at_data_end": cursor >= target and target < old_cursor + pd.Timedelta(minutes=minutes),
+            "paused_on_event": pause_on_event and bool(trade_events),
+            "auto_finalized": False,
+            "trade_closed": trade_closed,
+            "episode_continues_after_trade": episode.status == "active",
             "step_engine": "direct_1m" if minutes == 1 else "vectorized_event_driven",
+            "requested_bar_minutes": minutes,
+            "lifecycle_resolution": "cached_1m_sequence" if scan_passes > 1 or trade_events else "timeframe_jump",
             "lifecycle_scan_passes": scan_passes,
         }
 
@@ -336,7 +369,7 @@ class ReplayApplication:
         if episode.status != "active":
             raise ValueError("episode is not active")
         cleaned = self._clean_timeframes(timeframes or ["30m", "15m", "2m", "1m"])
-        minutes = max(1, min(int(minutes), 240))
+        minutes = max(1, min(int(minutes), 1440))
         old_cursor = pd.Timestamp(episode.cursor_time)
         start_cursor = pd.Timestamp(episode.start_time)
         target = max(start_cursor, old_cursor - pd.Timedelta(minutes=minutes))
@@ -345,6 +378,7 @@ class ReplayApplication:
             return {
                 "episode": asdict(episode),
                 "clock": self.data.clock_info(episode.cursor_time, episode.symbol),
+                "execution_price": self._execution_price_for(episode),
                 "events": self._ui_events(self.store.list_events(episode_id)),
                 "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
                 "active_trades": self.store.active_trades(episode_id),
@@ -372,6 +406,7 @@ class ReplayApplication:
         return {
             "episode": asdict(episode),
             "clock": self.data.clock_info(episode.cursor_time, episode.symbol),
+            "execution_price": self._execution_price_for(episode),
             "charts": {tf: {"timeframe": tf, "source": w.source, "bars": w.bars} for tf, w in windows.items()},
             "events": self._ui_events(self.store.list_events(episode_id)),
             "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
@@ -495,6 +530,14 @@ class ReplayApplication:
         return value
 
     @staticmethod
+    def _price_level_changed(previous: float | None, current: float | None) -> bool:
+        """Ignore browser float round-trips that do not change an order level."""
+        if previous is None or current is None:
+            return previous is not current
+        tolerance = max(1e-9, abs(float(previous)) * 1e-10, abs(float(current)) * 1e-10)
+        return abs(float(previous) - float(current)) > tolerance
+
+    @staticmethod
     def _validate_bracket(side: str, entry_price: float, stop_loss: float | None, take_profit: float | None) -> None:
         if stop_loss is not None:
             if side == "LONG" and stop_loss >= entry_price:
@@ -547,6 +590,101 @@ class ReplayApplication:
         risk = (entry_price - initial_stop) if side == "LONG" else (initial_stop - entry_price)
         return float(risk) if risk > 0 else None
 
+    @staticmethod
+    def _bounded_rate(payload: dict[str, Any], key: str, default: float) -> float:
+        raw = payload.get(key)
+        value = default if raw in (None, "") else float(raw)
+        if value < 0 or value > 0.05:
+            raise ValueError(f"{key} must be between 0 and 0.05")
+        return float(value)
+
+    @staticmethod
+    def _positive_float(payload: dict[str, Any], key: str, default: float) -> float:
+        raw = payload.get(key)
+        value = default if raw in (None, "") else float(raw)
+        if value <= 0:
+            raise ValueError(f"{key} must be > 0")
+        return float(value)
+
+    @staticmethod
+    def _market_execution_price(side: str, raw_price: float, slippage_rate: float, *, phase: str) -> float:
+        """Apply adverse slippage for a market entry or exit."""
+        if phase == "entry":
+            direction = 1.0 if side == "LONG" else -1.0
+        else:
+            direction = -1.0 if side == "LONG" else 1.0
+        return float(raw_price) * (1.0 + direction * float(slippage_rate))
+
+    def _trade_config(
+        self,
+        payload: dict[str, Any],
+        *,
+        side: str,
+        entry_price: float,
+        stop_loss: float | None,
+        order_type: str,
+    ) -> dict[str, Any]:
+        account_size = self._positive_float(payload, "account_size", DEFAULT_ACCOUNT_SIZE)
+        risk_pct = self._positive_float(payload, "risk_pct", DEFAULT_RISK_PCT)
+        if risk_pct > 100:
+            raise ValueError("risk_pct must be <= 100")
+        limit_fee_rate = self._bounded_rate(payload, "limit_fee_rate", DEFAULT_LIMIT_FEE_RATE)
+        market_fee_rate = self._bounded_rate(payload, "market_fee_rate", DEFAULT_MARKET_FEE_RATE)
+        market_slippage_rate = self._bounded_rate(
+            payload, "market_slippage_rate", DEFAULT_MARKET_SLIPPAGE_RATE
+        )
+        entry_fee_rate = limit_fee_rate if order_type == "limit" else market_fee_rate
+        planned_risk_amount = account_size * risk_pct / 100.0
+        quantity_raw = payload.get("quantity")
+        quantity = None if quantity_raw in (None, "") else float(quantity_raw)
+        stop_execution = None
+        risk_per_unit = None
+        if stop_loss is not None:
+            stop_execution = self._market_execution_price(
+                side, float(stop_loss), market_slippage_rate, phase="exit"
+            )
+            # 1R is only the Entry -> raw SL price distance. Fees and adverse
+            # stop execution are account costs on top of that risk budget.
+            risk_per_unit = abs(float(entry_price) - float(stop_loss))
+            if risk_per_unit > 0:
+                quantity = planned_risk_amount / risk_per_unit
+        if quantity is None:
+            quantity = 1.0
+        if quantity <= 0:
+            raise ValueError("quantity must be > 0")
+        entry_fee = float(entry_price) * quantity * entry_fee_rate
+        planned_stop_slippage = (
+            abs(float(stop_execution) - float(stop_loss)) * quantity
+            if stop_execution is not None and stop_loss is not None
+            else 0.0
+        )
+        planned_stop_fee = (
+            float(stop_execution) * quantity * market_fee_rate
+            if stop_execution is not None
+            else 0.0
+        )
+        planned_stop_net_loss = (
+            planned_risk_amount + planned_stop_slippage + entry_fee + planned_stop_fee
+            if stop_loss is not None
+            else None
+        )
+        return {
+            "account_size": account_size,
+            "risk_pct": risk_pct,
+            "planned_risk_amount": planned_risk_amount,
+            "quantity": quantity,
+            "risk_per_unit": risk_per_unit,
+            "planned_stop_execution": stop_execution,
+            "limit_fee_rate": limit_fee_rate,
+            "market_fee_rate": market_fee_rate,
+            "market_slippage_rate": market_slippage_rate,
+            "entry_fee_rate": entry_fee_rate,
+            "entry_fee": entry_fee,
+            "planned_stop_slippage": planned_stop_slippage,
+            "planned_stop_fee": planned_stop_fee,
+            "planned_stop_net_loss": planned_stop_net_loss,
+        }
+
     def _trade_open_events(
         self,
         episode_id: str,
@@ -562,6 +700,7 @@ class ReplayApplication:
         order_id: str | None,
         fill_model: str,
         entry_context: dict[str, Any] | None = None,
+        trade_config: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         common = {
             "trade_id": trade_id,
@@ -575,8 +714,8 @@ class ReplayApplication:
             "initial_take_profit": take_profit,
             "entry_context": entry_context or {},
             "fill_model": fill_model,
-            "fee_round_trip_rate": DEFAULT_ROUND_TRIP_FEE_RATE,
             "entry_bar_policy": "include_from_open" if order_type == "market" else "exclude_intrabar_limit_fill_bar",
+            **(trade_config or {}),
         }
         filled = self.store.add_event(
             episode_id, "ORDER_FILLED", entry_event["event_time"], timeframe=timeframe, price=entry_price,
@@ -668,12 +807,44 @@ class ReplayApplication:
         entry_time = str(payload.get("entry_time") or trade.get("event_time"))
         initial_stop_raw = payload.get("initial_stop_loss")
         initial_stop = None if initial_stop_raw in (None, "") else float(initial_stop_raw)
-        gross = self._trade_returns(side, entry_price, float(exit_price))
-        net = gross - DEFAULT_ROUND_TRIP_FEE_RATE
+        market_slippage_rate = float(payload.get("market_slippage_rate") or DEFAULT_MARKET_SLIPPAGE_RATE)
+        limit_fee_rate = float(payload.get("limit_fee_rate") or DEFAULT_LIMIT_FEE_RATE)
+        market_fee_rate = float(payload.get("market_fee_rate") or DEFAULT_MARKET_FEE_RATE)
+        exit_order_type = "limit" if exit_reason == "TAKE_PROFIT" else "market"
+        raw_exit_price = float(exit_price)
+        executed_exit_price = (
+            raw_exit_price
+            if exit_order_type == "limit"
+            else self._market_execution_price(side, raw_exit_price, market_slippage_rate, phase="exit")
+        )
+        gross = self._trade_returns(side, entry_price, executed_exit_price)
         risk = self._entry_risk(side, entry_price, initial_stop)
-        pnl_per_share = (exit_price - entry_price) if side == "LONG" else (entry_price - exit_price)
-        r_multiple = (pnl_per_share / risk) if risk else None
-        mfe, mae = self._path_metrics(side, entry_price, prior_bars, float(exit_price))
+        pnl_per_share = (executed_exit_price - entry_price) if side == "LONG" else (entry_price - executed_exit_price)
+        quantity = float(payload.get("quantity") or 1.0)
+        raw_pnl_per_share = (raw_exit_price - entry_price) if side == "LONG" else (entry_price - raw_exit_price)
+        gross_pnl = pnl_per_share * quantity
+        raw_gross_pnl = raw_pnl_per_share * quantity
+        entry_fee_rate = float(payload.get("entry_fee_rate") or (limit_fee_rate if payload.get("order_type") == "limit" else market_fee_rate))
+        entry_fee = float(payload.get("entry_fee") or (entry_price * quantity * entry_fee_rate))
+        exit_fee_rate = limit_fee_rate if exit_order_type == "limit" else market_fee_rate
+        exit_fee = executed_exit_price * quantity * exit_fee_rate
+        net_pnl = gross_pnl - entry_fee - exit_fee
+        slippage_cost = max(0.0, raw_gross_pnl - gross_pnl)
+        total_costs = entry_fee + exit_fee + slippage_cost
+        account_size = float(payload.get("account_size") or DEFAULT_ACCOUNT_SIZE)
+        net = net_pnl / account_size if account_size > 0 else 0.0
+        planned_risk_amount = payload.get("planned_risk_amount")
+        r_multiple = (
+            net_pnl / float(planned_risk_amount)
+            if planned_risk_amount not in (None, 0, "")
+            else ((pnl_per_share / risk) if risk else None)
+        )
+        risk_overrun_amount = (
+            max(0.0, -net_pnl - float(planned_risk_amount))
+            if planned_risk_amount not in (None, 0, "") and net_pnl < 0
+            else 0.0
+        )
+        mfe, mae = self._path_metrics(side, entry_price, prior_bars, executed_exit_price)
         hold_minutes = max(0.0, (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)) / pd.Timedelta(minutes=1))
         common = {
             "trade_id": trade_id,
@@ -681,13 +852,32 @@ class ReplayApplication:
             "entry_event_id": payload.get("entry_event_id") or trade.get("entry_event_id"),
             "entry_price": entry_price,
             "entry_time": entry_time,
-            "exit_price": float(exit_price),
+            "exit_price": executed_exit_price,
+            "raw_exit_price": raw_exit_price,
             "exit_time": exit_time,
             "exit_reason": exit_reason,
             "resolution": resolution,
             "gross_return_pct": gross * 100.0,
-            "fee_round_trip_rate": DEFAULT_ROUND_TRIP_FEE_RATE,
             "net_return_pct": net * 100.0,
+            "account_size": account_size,
+            "quantity": quantity,
+            "planned_risk_amount": planned_risk_amount,
+            "risk_per_unit": payload.get("risk_per_unit"),
+            "planned_stop_execution": payload.get("planned_stop_execution"),
+            "planned_stop_net_loss": payload.get("planned_stop_net_loss"),
+            "gross_pnl": gross_pnl,
+            "raw_gross_pnl": raw_gross_pnl,
+            "net_pnl": net_pnl,
+            "entry_fee": entry_fee,
+            "exit_fee": exit_fee,
+            "total_fees": entry_fee + exit_fee,
+            "slippage_cost": slippage_cost,
+            "total_costs": total_costs,
+            "risk_overrun_amount": risk_overrun_amount,
+            "entry_fee_rate": entry_fee_rate,
+            "exit_fee_rate": exit_fee_rate,
+            "exit_order_type": exit_order_type,
+            "market_slippage_rate": market_slippage_rate,
             "r_multiple": r_multiple,
             "mfe_pct": mfe * 100.0,
             "mae_pct": mae * 100.0,
@@ -703,13 +893,12 @@ class ReplayApplication:
             "TAKE_PROFIT": "TAKE_PROFIT_HIT",
             "STOP_LOSS": "STOP_LOSS_HIT",
             "AMBIGUOUS_BOTH_HIT": "TRADE_EXIT_AMBIGUOUS",
-            "MANUAL_CLOSE": "MANUAL_EXIT",
         }.get(exit_reason, "TRADE_EXIT")
         emitted.append(self.store.add_event(
-            episode_id, hit_type, exit_time, timeframe=trade.get("timeframe") or "1m", price=float(exit_price), payload=common,
+            episode_id, hit_type, exit_time, timeframe=trade.get("timeframe") or "1m", price=executed_exit_price, payload=common,
         ))
         emitted.append(self.store.add_event(
-            episode_id, "TRADE_CLOSED", exit_time, timeframe=trade.get("timeframe") or "1m", price=float(exit_price), payload=common,
+            episode_id, "TRADE_CLOSED", exit_time, timeframe=trade.get("timeframe") or "1m", price=executed_exit_price, payload=common,
         ))
         return emitted
 
@@ -803,7 +992,45 @@ class ReplayApplication:
                 "placed_at": order_event.get("event_time"),
                 "trigger_bar_time": fill.get("trigger_bar_time"),
                 "trigger_bar": fill.get("trigger_bar"),
+                "sequence_resolution": fill.get("sequence_resolution"),
                 "entry_context": payload.get("entry_context") or {},
+                "account_size": payload.get("account_size"),
+                "risk_pct": payload.get("risk_pct"),
+                "quantity": payload.get("quantity"),
+                "limit_fee_rate": payload.get("limit_fee_rate"),
+                "market_fee_rate": payload.get("market_fee_rate"),
+                "market_slippage_rate": payload.get("market_slippage_rate"),
+            },
+        )
+
+    def _limit_auto_cancel_event(
+        self,
+        episode_id: str,
+        order_event: dict[str, Any],
+        outcome: dict[str, Any],
+        cancel_time: str,
+    ) -> dict[str, Any]:
+        payload = order_event.get("payload") or {}
+        return self.store.add_event(
+            episode_id,
+            "LIMIT_CANCEL",
+            cancel_time,
+            timeframe=order_event.get("timeframe") or "1m",
+            price=float(outcome["trigger_price"]),
+            payload={
+                "order_id": payload.get("order_id"),
+                "side": payload.get("side"),
+                "limit_price": float(order_event["price"]),
+                "take_profit": payload.get("take_profit"),
+                "stop_loss": payload.get("stop_loss"),
+                "reason": "take_profit_before_entry",
+                "cancel_source": "replay_auto",
+                "result": "MISSED_TRADE",
+                "placed_at": order_event.get("event_time"),
+                "original_order_event_id": order_event.get("id"),
+                "trigger_bar_time": outcome.get("trigger_bar_time"),
+                "trigger_bar": outcome.get("trigger_bar"),
+                "sequence_resolution": outcome.get("sequence_resolution"),
             },
         )
 
@@ -816,10 +1043,11 @@ class ReplayApplication:
             payload = order.get("payload") or {}
             placed_at = pd.Timestamp(order["event_time"])
             start = max(old_cursor, placed_at)
-            result = self.data.limit_order_fill(
+            result = self.data.limit_order_lifecycle(
                 episode.symbol,
                 str(payload.get("side") or ""),
                 float(order["price"]),
+                self._optional_price(payload, "take_profit"),
                 start,
                 new_cursor,
             )
@@ -827,6 +1055,9 @@ class ReplayApplication:
                 continue
             trigger_start = pd.Timestamp(result["trigger_bar_time"])
             fill_time = (trigger_start + pd.Timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if result.get("outcome") == "cancel":
+                emitted.append(self._limit_auto_cancel_event(episode_id, order, result, fill_time))
+                continue
             trade_id = uuid.uuid4().hex[:12]
             fill_event = self._limit_fill_event(episode_id, order, result, fill_time, trade_id)
             emitted.append(fill_event)
@@ -840,6 +1071,13 @@ class ReplayApplication:
                 order_id=str(payload.get("order_id") or "") or None,
                 fill_model=str((fill_event.get("payload") or {}).get("fill_model") or "resting_limit_1m_causal_touch"),
                 entry_context=payload.get("entry_context") or {},
+                trade_config=self._trade_config(
+                    payload,
+                    side=str(payload.get("side") or "").upper(),
+                    entry_price=float(fill_event["price"]),
+                    stop_loss=self._optional_price(payload, "stop_loss"),
+                    order_type="limit",
+                ),
             ))
             emitted.extend(self._bracket_events(
                 episode_id,
@@ -857,53 +1095,41 @@ class ReplayApplication:
     def trade(self, episode_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         episode = self.store.get_episode(episode_id)
         side = str(payload.get("side") or "").upper()
-        if side not in {"LONG", "SHORT", "CLOSE"}:
-            raise ValueError("side must be LONG, SHORT or CLOSE")
+        if side == "CLOSE":
+            raise ValueError("manual close is disabled; Replay exits only at TP or SL")
+        if side not in {"LONG", "SHORT"}:
+            raise ValueError("side must be LONG or SHORT")
+        if episode.status != "active":
+            raise ValueError("episode is not active")
         order_type = str(payload.get("order_type") or "market").lower().strip()
         timeframe = str(payload.get("timeframe") or "1m")
-        stop_loss = self._optional_price(payload, "stop_loss") if side != "CLOSE" else None
-        take_profit = self._optional_price(payload, "take_profit") if side != "CLOSE" else None
-
-        if side == "CLOSE":
-            active = self.store.active_trades(episode_id)
-            if not active:
-                raise ValueError("当前没有可平的持仓")
-            trade = active[-1]
-            fill = self.data.execution_open(episode.symbol, episode.cursor_time)
-            event = self.store.add_event(
-                episode_id, side, episode.cursor_time, timeframe=timeframe, price=fill,
-                payload={"fill_model": "cursor_1m_open", "order_type": "market", "trade_id": trade.get("trade_id")},
-            )
-            trade_payload = trade.get("payload") or {}
-            path_start = pd.Timestamp(trade_payload.get("entry_time") or trade["event_time"])
-            prior = self.data.closed_1m_bars(episode.symbol, path_start, pd.Timestamp(episode.cursor_time))
-            lifecycle = self._close_trade(
-                episode_id, trade, exit_time=episode.cursor_time, exit_price=fill,
-                exit_reason="MANUAL_CLOSE", trigger_bar=None, prior_bars=prior,
-            )
-            events = [event, *lifecycle]
-            return {
-                "event": self._ui_event(event), "events": self._ui_events(events), "fill_price": fill, "status": "filled",
-                "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
-                "active_trades": self.store.active_trades(episode_id),
-                "trade_summary": self.store.trade_summary(episode_id),
-            }
+        stop_loss = self._optional_price(payload, "stop_loss")
+        take_profit = self._optional_price(payload, "take_profit")
 
         if order_type == "market":
-            fill = self.data.execution_open(episode.symbol, episode.cursor_time)
+            raw_fill = self.data.execution_open(episode.symbol, episode.cursor_time)
+            market_slippage_rate = self._bounded_rate(
+                payload, "market_slippage_rate", DEFAULT_MARKET_SLIPPAGE_RATE
+            )
+            fill = self._market_execution_price(side, raw_fill, market_slippage_rate, phase="entry")
             self._validate_bracket(side, fill, stop_loss, take_profit)
+            trade_config = self._trade_config(
+                payload, side=side, entry_price=fill, stop_loss=stop_loss, order_type="market"
+            )
             trade_id = uuid.uuid4().hex[:12]
             event = self.store.add_event(
                 episode_id, side, episode.cursor_time, timeframe=timeframe, price=fill,
                 payload={
                     "fill_model": "cursor_1m_open", "order_type": "market", "trade_id": trade_id,
-                    "stop_loss": stop_loss, "take_profit": take_profit,
+                    "stop_loss": stop_loss, "take_profit": take_profit, "raw_fill_price": raw_fill,
+                    **trade_config,
                 },
             )
             events = [event, *self._trade_open_events(
                 episode_id, event, trade_id=trade_id, side=side, timeframe=timeframe,
                 entry_price=fill, order_type="market", stop_loss=stop_loss, take_profit=take_profit,
-                order_id=None, fill_model="cursor_1m_open", entry_context={},
+                order_id=None, fill_model="cursor_1m_open_with_adverse_slippage", entry_context=payload.get("entry_context") or {},
+                trade_config=trade_config,
             ), *self._bracket_events(
                 episode_id, side=side, timeframe=timeframe, event_time=episode.cursor_time,
                 entry_price=fill, stop_loss=stop_loss, take_profit=take_profit, trade_id=trade_id,
@@ -923,11 +1149,15 @@ class ReplayApplication:
         self._validate_bracket(side, limit_price, stop_loss, take_profit)
         order_id = uuid.uuid4().hex[:12]
         entry_context = payload.get("entry_context") or {}
+        order_config = self._trade_config(
+            payload, side=side, entry_price=limit_price, stop_loss=stop_loss, order_type="limit"
+        )
         order_event = self.store.add_event(
             episode_id, "LIMIT_ORDER", episode.cursor_time, timeframe=timeframe, price=limit_price,
             payload={
                 "order_id": order_id, "side": side, "order_type": "limit", "status": "pending",
                 "stop_loss": stop_loss, "take_profit": take_profit, "entry_context": entry_context,
+                **order_config,
             },
         )
 
@@ -942,10 +1172,14 @@ class ReplayApplication:
             }
             trade_id = uuid.uuid4().hex[:12]
             fill_event = self._limit_fill_event(episode_id, order_event, immediate, episode.cursor_time, trade_id)
+            trade_config = self._trade_config(
+                payload, side=side, entry_price=current_open, stop_loss=stop_loss, order_type="limit"
+            )
             events = [order_event, fill_event, *self._trade_open_events(
                 episode_id, fill_event, trade_id=trade_id, side=side, timeframe=timeframe,
-                entry_price=current_open, order_type="market", stop_loss=stop_loss, take_profit=take_profit,
+                entry_price=current_open, order_type="limit", stop_loss=stop_loss, take_profit=take_profit,
                 order_id=order_id, fill_model="marketable_limit_at_cursor_open", entry_context=entry_context,
+                trade_config=trade_config,
             ), *self._bracket_events(
                 episode_id, side=side, timeframe=timeframe, event_time=episode.cursor_time,
                 entry_price=current_open, stop_loss=stop_loss, take_profit=take_profit, order_id=order_id, trade_id=trade_id,
@@ -995,6 +1229,108 @@ class ReplayApplication:
             "trade_summary": self.store.trade_summary(episode_id),
         }
 
+    def update_order(self, episode_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Append an edit to a resting order or an open trade bracket."""
+        episode = self.store.get_episode(episode_id)
+        if episode.status != "active":
+            raise ValueError("episode is not active")
+        order_id = str(payload.get("order_id") or "").strip()
+        trade_id = str(payload.get("trade_id") or "").strip()
+        stop_loss = self._optional_price(payload, "stop_loss")
+        take_profit = self._optional_price(payload, "take_profit")
+
+        if order_id:
+            active_orders = [
+                item for item in self.store.active_limit_orders(episode_id)
+                if str((item.get("payload") or {}).get("order_id") or "") == order_id
+            ]
+            if active_orders:
+                current = active_orders[-1]
+                current_payload = dict(current.get("payload") or {})
+                side = str(current_payload.get("side") or "").upper()
+                limit_price = float(payload.get("limit_price", current.get("price")))
+                self._validate_bracket(side, limit_price, stop_loss, take_profit)
+                merged = {
+                    **current_payload,
+                    "order_id": order_id,
+                    "side": side,
+                    "order_type": "limit",
+                    "status": "pending",
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "modified_from_event_id": current.get("id"),
+                }
+                for key in (
+                    "account_size", "risk_pct", "limit_fee_rate", "market_fee_rate",
+                    "market_slippage_rate", "entry_context",
+                ):
+                    if key in payload:
+                        merged[key] = payload[key]
+                merged.update(self._trade_config(
+                    merged,
+                    side=side,
+                    entry_price=limit_price,
+                    stop_loss=stop_loss,
+                    order_type="limit",
+                ))
+                event = self.store.add_event(
+                    episode_id,
+                    "LIMIT_MODIFY",
+                    episode.cursor_time,
+                    timeframe=current.get("timeframe") or payload.get("timeframe") or "1m",
+                    price=limit_price,
+                    payload=merged,
+                )
+                return {
+                    "events": self._ui_events([event]),
+                    "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
+                    "active_trades": self.store.active_trades(episode_id),
+                    "trade_summary": self.store.trade_summary(episode_id),
+                }
+
+        active_trades = self.store.active_trades(episode_id)
+        matches = [
+            item for item in active_trades
+            if (trade_id and str(item.get("trade_id") or "") == trade_id)
+            or (order_id and str((item.get("payload") or {}).get("order_id") or "") == order_id)
+        ]
+        if not matches:
+            raise ValueError("active order or trade not found")
+        trade = matches[-1]
+        trade_payload = trade.get("payload") or {}
+        side = str(trade_payload.get("side") or "").upper()
+        entry_price = float(trade_payload.get("entry_price") or trade.get("price"))
+        self._validate_bracket(side, entry_price, stop_loss, take_profit)
+        linked_trade_id = str(trade.get("trade_id") or trade_id)
+        common = {
+            "trade_id": linked_trade_id,
+            "order_id": trade_payload.get("order_id"),
+            "side": side,
+            "source": "position_drag",
+        }
+        current_stop, current_take = self._current_bracket(episode_id, trade)
+        events: list[dict[str, Any]] = []
+        if stop_loss is not None and self._price_level_changed(current_stop, stop_loss):
+            events.append(self.store.add_event(
+                episode_id, "SL", episode.cursor_time,
+                timeframe=trade.get("timeframe") or payload.get("timeframe") or "1m",
+                price=stop_loss,
+                payload={**common, "kind": "stop_loss", "previous_price": current_stop},
+            ))
+        if take_profit is not None and self._price_level_changed(current_take, take_profit):
+            events.append(self.store.add_event(
+                episode_id, "TP", episode.cursor_time,
+                timeframe=trade.get("timeframe") or payload.get("timeframe") or "1m",
+                price=take_profit,
+                payload={**common, "kind": "take_profit", "previous_price": current_take},
+            ))
+        return {
+            "events": self._ui_events(events),
+            "active_limit_orders": self._ui_events(self.store.active_limit_orders(episode_id)),
+            "active_trades": self.store.active_trades(episode_id),
+            "trade_summary": self.store.trade_summary(episode_id),
+        }
+
     def _finalize_episode(self, episode_id: str, *, reason: str, finalized_by: str) -> dict[str, Any]:
         episode = self.store.get_episode(episode_id)
         if episode.status != "active":
@@ -1024,6 +1360,8 @@ class ReplayApplication:
         episode = self.store.get_episode(episode_id)
         if episode.status != "active":
             raise ValueError("episode is not active")
+        if self.store.active_trades(episode_id):
+            raise ValueError("当前持仓必须由 Replay 触发 TP 或 SL 后才能结束训练")
         self._sync_trade_lifecycle(episode_id, pd.Timestamp(episode.cursor_time))
         finalized = self._finalize_episode(episode_id, reason="episode_end", finalized_by="end_episode")
         return {
@@ -1094,6 +1432,17 @@ class ReplayHandler(BaseHTTPRequestHandler):
                     tfs = [x.strip() for x in params.get("timeframes", "30m,15m,2m,1m").split(",") if x.strip()]
                     _json_response(self, {"ok": True, **APP.snapshots(episode_id, tfs, int(params.get("limit", "700")))})
                     return
+                if action == "history":
+                    _json_response(self, {
+                        "ok": True,
+                        **APP.history(
+                            episode_id,
+                            params.get("timeframe", "30m"),
+                            params.get("before", ""),
+                            int(params.get("limit", "900")),
+                        ),
+                    })
+                    return
                 if action == "events":
                     _json_response(self, {"ok": True, "events": APP._ui_events(APP.store.list_events(episode_id))}); return
                 if action == "export":
@@ -1120,7 +1469,7 @@ class ReplayHandler(BaseHTTPRequestHandler):
             episode_id, action = match.groups()
             if action == "step":
                 tfs = payload.get("timeframes") or ["30m", "15m", "2m", "1m"]
-                _json_response(self, {"ok": True, **APP.step(episode_id, int(payload.get("minutes", 1)), list(tfs))}); return
+                _json_response(self, {"ok": True, **APP.step(episode_id, int(payload.get("minutes", 1)), list(tfs), pause_on_event=payload.get("pause_on_event") is True)}); return
             if action == "rewind":
                 tfs = payload.get("timeframes") or ["30m", "15m", "2m", "1m"]
                 _json_response(self, {"ok": True, **APP.rewind(episode_id, int(payload.get("minutes", 1)), list(tfs))}); return
@@ -1132,6 +1481,8 @@ class ReplayHandler(BaseHTTPRequestHandler):
                 _json_response(self, {"ok": True, **APP.set_annotation_line_visibility(episode_id, payload)}); return
             if action == "trade":
                 _json_response(self, {"ok": True, **APP.trade(episode_id, payload)}); return
+            if action == "update-order":
+                _json_response(self, {"ok": True, **APP.update_order(episode_id, payload)}); return
             if action == "cancel-order":
                 _json_response(self, {"ok": True, **APP.cancel_limit_order(episode_id, payload)}); return
             if action == "close":
@@ -1185,7 +1536,7 @@ def main() -> int:
             f"[human_replay_lab] {symbol}: {coverage['available_start_et']} -> "
             f"{coverage['available_end_et']} | rows={coverage['rows_1m']:,}"
         )
-    print("[human_replay_lab] profiles: SOXL=weekday 07:30-16:00 ET; ETH/XAU=24/7 until TP/SL or manual end")
+    print("[human_replay_lab] profiles: SOXL=weekday 07:30-16:00 ET; ETH/XAU=24/7 continuous Replay; each trade exits at TP/SL")
     print(f"[human_replay_lab] labels: {args.store}")
     print("[human_replay_lab] Ctrl+C to stop")
     try:

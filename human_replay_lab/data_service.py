@@ -40,7 +40,7 @@ REPLAY_END_TIME = time(16, 0)
 MARKET_OPEN_TIME = time(9, 30)
 DATA_SOURCE = "OKX local 1m"
 CHART_CONTEXT_MODE = "all_available_okx_bars"
-DEFAULT_SYMBOL = "SOXL-USDT-SWAP"
+DEFAULT_SYMBOL = "ETH-USDT-SWAP"
 DEFAULT_PREFETCH_DAYS = 50
 CONTINUOUS_FORWARD_PREFETCH_DAYS = 7
 CONTINUOUS_24X7_SYMBOLS = frozenset({"ETH-USDT-SWAP", "XAU-USDT-SWAP"})
@@ -209,10 +209,10 @@ class ReplayDataService:
         return str(symbol or "").upper().strip() in CONTINUOUS_24X7_SYMBOLS
 
     def session_profile(self, symbol: str) -> str:
-        return "crypto_24x7_until_bracket_exit" if self.is_24x7_symbol(symbol) else "weekday_0730_1600_et"
+        return "crypto_24x7_continuous_replay" if self.is_24x7_symbol(symbol) else "weekday_0730_1600_et"
 
     def auto_close_on_bracket_exit(self, symbol: str) -> bool:
-        return self.is_24x7_symbol(symbol)
+        return False
 
     def _loader(self, symbol: str) -> OKXDataLoader:
         normalized = self._require_symbol(symbol)
@@ -660,6 +660,49 @@ class ReplayDataService:
             source,
         )
 
+    def historical_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        before: str | pd.Timestamp,
+        limit: int = 900,
+    ) -> dict[str, Any]:
+        """Return a page of fully closed candles strictly before ``before``.
+
+        Unlike :meth:`candles`, this path does not use the replay-day cache and
+        never adds a forming candle.  It is used by the browser when the trader
+        drags the chart to the oldest loaded bar, so it may be called repeatedly
+        until the local OKX coverage boundary is reached.
+        """
+        normalized = self._require_symbol(symbol)
+        if timeframe not in SUPPORTED_TIMEFRAMES:
+            raise ValueError(f"unsupported timeframe: {timeframe}")
+        page_size = max(30, min(int(limit), 2000))
+        before_ts = _ny_wall_ts(before)
+        delta = TIMEFRAME_DELTA[timeframe]
+        coverage_start = _ny_wall_ts(self.coverage(normalized)["available_start_et"])
+        # Crypto is normally dense, while the extra padding keeps the requested
+        # page full across small local-data gaps and resampling boundaries.
+        requested_start = before_ts - delta * (page_size + 32)
+        start = max(coverage_start, requested_start)
+        raw = self._load_1m(normalized, start, before_ts)
+        frame = self._resample(raw, timeframe) if not raw.empty else raw
+        if not frame.empty:
+            frame = frame[(frame.index < before_ts) & ((frame.index + delta) <= before_ts)]
+        selected = frame.tail(page_size) if not frame.empty else frame
+        bars = self._rows_to_bars(selected, timeframe) if not selected.empty else []
+        earliest = _ny_wall_ts(selected.index[0]) if not selected.empty else before_ts
+        has_more = bool(earliest > coverage_start)
+        return {
+            "symbol": normalized,
+            "timeframe": timeframe,
+            "before": before_ts.strftime("%Y-%m-%d %H:%M:%S"),
+            "bars": bars,
+            "has_more": has_more,
+            "coverage_start": coverage_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "source": "paged_resample_from_okx_local_1m" if timeframe != "1m" else "paged_okx_local_1m",
+        }
+
     def incremental_bars(
         self,
         symbol: str,
@@ -702,21 +745,21 @@ class ReplayDataService:
             raise ValueError(f"no OKX {self._require_symbol(symbol)} 1m execution bar at {cursor_ts} ET")
         return float(exact.iloc[0]["open"])
 
-    def limit_order_fill(
+    def limit_order_lifecycle(
         self,
         symbol: str,
         side: str,
         limit_price: float,
+        take_profit: float | None,
         start_cursor: str | pd.Timestamp,
         end_cursor: str | pd.Timestamp,
     ) -> dict[str, Any] | None:
-        """Return the earliest causal 1m fill in [start_cursor, end_cursor).
+        """Return the first causal Entry/TP outcome for a resting limit.
 
-        The replay only calls this after advancing to ``end_cursor``. Therefore
-        every inspected 1m bar is already closed/available to the user. For a
-        resting buy limit we fill at the limit when ``low <= limit``; if a bar
-        opens below the limit, the simulated fill receives the better open. A
-        sell limit is symmetric.
+        A TP touch on an earlier closed 1m bar invalidates the unfilled plan.
+        When Entry and TP are both touched inside the same 1m bar, OHLC cannot
+        prove their ordering, so Entry receives conservative priority and the
+        ambiguity is kept in ``sequence_resolution`` for auditability.
         """
         self._require_symbol(symbol)
         side = str(side).upper().strip()
@@ -725,6 +768,9 @@ class ReplayDataService:
         price = float(limit_price)
         if not price > 0:
             raise ValueError("limit_price must be > 0")
+        take = None if take_profit is None else float(take_profit)
+        if take is not None and not take > 0:
+            raise ValueError("take_profit must be > 0")
         start_ts = _ny_wall_ts(start_cursor)
         end_ts = self.validate_cursor(symbol, end_cursor)
         if end_ts <= start_ts:
@@ -735,26 +781,70 @@ class ReplayDataService:
         for ts, row in rows.iterrows():
             open_ = float(row["open"]); high = float(row["high"]); low = float(row["low"]); close = float(row["close"])
             if side == "LONG":
-                if open_ <= price:
-                    fill_price, reason = open_, "gap_or_open_better_than_limit"
-                elif low <= price:
-                    fill_price, reason = price, "intrabar_touch_limit"
-                else:
-                    continue
+                entry_at_open = open_ <= price
+                entry_hit = entry_at_open or low <= price
+                take_at_open = take is not None and open_ >= take
+                take_hit = take is not None and (take_at_open or high >= take)
             else:
-                if open_ >= price:
-                    fill_price, reason = open_, "gap_or_open_better_than_limit"
-                elif high >= price:
-                    fill_price, reason = price, "intrabar_touch_limit"
-                else:
-                    continue
+                entry_at_open = open_ >= price
+                entry_hit = entry_at_open or high >= price
+                take_at_open = take is not None and open_ <= take
+                take_hit = take is not None and (take_at_open or low <= take)
+            if not entry_hit and not take_hit:
+                continue
+            trigger_bar = {"open": open_, "high": high, "low": low, "close": close}
+            trigger_time = _ny_wall_ts(ts).strftime("%Y-%m-%d %H:%M:%S")
+            if take_hit and not entry_hit:
+                return {
+                    "outcome": "cancel",
+                    "cancel_reason": "take_profit_before_entry",
+                    "trigger_price": float(take),
+                    "trigger_bar_time": trigger_time,
+                    "trigger_bar": trigger_bar,
+                    "sequence_resolution": "take_profit_touch_before_entry",
+                }
+            if take_hit and entry_hit and take_at_open and not entry_at_open:
+                return {
+                    "outcome": "cancel",
+                    "cancel_reason": "take_profit_before_entry",
+                    "trigger_price": float(take),
+                    "trigger_bar_time": trigger_time,
+                    "trigger_bar": trigger_bar,
+                    "sequence_resolution": "take_profit_gap_before_entry",
+                }
+            fill_price = open_ if entry_at_open else price
+            reason = "gap_or_open_better_than_limit" if entry_at_open else "intrabar_touch_limit"
+            if take_hit and entry_hit:
+                sequence_resolution = (
+                    "entry_at_open_before_intrabar_take_profit"
+                    if entry_at_open
+                    else "same_1m_entry_tp_ambiguous_entry_priority"
+                )
+            else:
+                sequence_resolution = "entry_touch_before_take_profit"
             return {
+                "outcome": "fill",
                 "fill_price": float(fill_price),
-                "trigger_bar_time": _ny_wall_ts(ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "trigger_bar_time": trigger_time,
                 "fill_reason": reason,
-                "trigger_bar": {"open": open_, "high": high, "low": low, "close": close},
+                "trigger_bar": trigger_bar,
+                "sequence_resolution": sequence_resolution,
             }
         return None
+
+    def limit_order_fill(
+        self,
+        symbol: str,
+        side: str,
+        limit_price: float,
+        start_cursor: str | pd.Timestamp,
+        end_cursor: str | pd.Timestamp,
+    ) -> dict[str, Any] | None:
+        """Backward-compatible Entry-only wrapper around the lifecycle scan."""
+        result = self.limit_order_lifecycle(
+            symbol, side, limit_price, None, start_cursor, end_cursor,
+        )
+        return result if result is not None and result.get("outcome") == "fill" else None
 
     def closed_1m_frame(
         self,
@@ -864,12 +954,12 @@ class ReplayDataService:
                 "market_phase": "24/7",
                 "market_open_bjt": "-",
                 "episode_start_bjt": _beijing_text(wall)[11:16],
-                "episode_end_bjt": "TP/SL",
+                "episode_end_bjt": "MANUAL",
                 "market_open_et": "-",
                 "episode_start_et": wall.strftime("%H:%M"),
-                "episode_end_et": "TP/SL",
+                "episode_end_et": "MANUAL",
                 "weekdays_only": "false",
-                "session_profile": "crypto_24x7_until_bracket_exit",
+                "session_profile": "crypto_24x7_continuous_replay",
                 "chart_context": "all available OKX bars; 24/7",
                 "source": _data_source(normalized),
             }

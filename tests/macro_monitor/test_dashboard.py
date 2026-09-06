@@ -251,6 +251,52 @@ def test_http_api_and_sse_deliver_snapshots_without_page_refresh(tmp_path: Path)
         server.stop()
 
 
+@pytest.mark.parametrize(
+    "disconnect_error",
+    [BrokenPipeError, ConnectionResetError, ConnectionAbortedError],
+)
+def test_dashboard_silences_expected_client_disconnects_but_keeps_serving(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    disconnect_error: type[OSError],
+) -> None:
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+    db_path = tmp_path / "macro.sqlite"
+    _seed_dashboard(db_path, now)
+    server = MacroDashboardServer(
+        DashboardDataService(db_path, now_provider=lambda: now),
+        _logger(),
+        host="127.0.0.1",
+        port=0,
+    )
+    server.start()
+    try:
+        try:
+            raise disconnect_error("browser closed a localhost connection")
+        except disconnect_error:
+            server.httpd.handle_error(object(), ("127.0.0.1", 49925))
+
+        assert capsys.readouterr().err == ""
+        with urllib.request.urlopen(f"{server.url}/healthz", timeout=3) as response:
+            assert json.loads(response.read()) == {"status": "ok"}
+    finally:
+        server.stop()
+
+
+def test_dashboard_still_reports_unexpected_server_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    server = MacroDashboardServer(DashboardDataService(tmp_path / "missing.sqlite"), _logger(), port=0)
+    try:
+        try:
+            raise RuntimeError("unexpected dashboard defect")
+        except RuntimeError:
+            server.httpd.handle_error(object(), ("127.0.0.1", 49925))
+
+        error_output = capsys.readouterr().err
+        assert "RuntimeError: unexpected dashboard defect" in error_output
+    finally:
+        server.httpd.server_close()
+
+
 def test_stopping_dashboard_does_not_stop_or_lock_collector_storage(tmp_path: Path) -> None:
     now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
     db_path = tmp_path / "macro.sqlite"

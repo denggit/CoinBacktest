@@ -36,10 +36,10 @@ def test_eth_specific_start_is_beijing_24x7_and_weekend_allowed(tmp_path) -> Non
     clock = service.clock_info(cursor, "ETH-USDT-SWAP")
     assert clock["market_phase"] == "24/7"
     assert clock["weekdays_only"] == "false"
-    assert clock["episode_end_bjt"] == "TP/SL"
+    assert clock["episode_end_bjt"] == "MANUAL"
 
 
-def test_eth_tp_auto_finalizes_episode_at_hit_minute_even_with_60m_step(tmp_path) -> None:
+def test_eth_tp_closes_only_the_trade_and_replay_continues_full_step(tmp_path) -> None:
     _seed_eth(tmp_path)
     app = ReplayApplication(ReplayDataService(tmp_path), ReplayStore(tmp_path / "replay.sqlite3"))
     ep = app.create_episode({
@@ -58,18 +58,26 @@ def test_eth_tp_auto_finalizes_episode_at_hit_minute_even_with_60m_step(tmp_path
     assert result["status"] == "filled"
 
     stepped = app.step(ep["id"], 60, ["30m", "15m", "2m", "1m"])
-    assert stepped["auto_finalized"] is True
-    assert stepped["episode"]["status"] == "closed"
-    # Entry at 00:00. 00:01 bar closes at 00:02 and hits TP. Do not reveal the remaining 58 minutes.
-    assert stepped["advanced_minutes"] == 2
-    assert stepped["episode"]["cursor_time"] == "2026-06-21 00:02:00"
+    assert stepped["auto_finalized"] is False
+    assert stepped["trade_closed"] is True
+    assert stepped["episode_continues_after_trade"] is True
+    assert stepped["episode"]["status"] == "active"
+    # The trade exits at 00:02, but a 60m Replay step still completes at 01:00.
+    assert stepped["advanced_minutes"] == 60
+    assert stepped["episode"]["cursor_time"] == "2026-06-21 01:00:00"
     types = [e["event_type"] for e in stepped["trade_events"]]
     assert "TAKE_PROFIT_HIT" in types
     assert "TRADE_CLOSED" in types
-    assert "EPISODE_SUMMARY" in types
-    assert "CLOSE" in types
+    assert "EPISODE_SUMMARY" not in types
+    assert "CLOSE" not in types
     assert stepped["trade_summary"]["closed_trades"] == 1
     assert stepped["trade_summary"]["wins"] == 1
+    second = app.trade(ep["id"], {
+        "side": "LONG", "timeframe": "1m", "order_type": "market",
+        "stop_loss": 99.0, "take_profit": 101.0,
+    })
+    assert second["status"] == "filled"
+    assert len(second["active_trades"]) == 1
 
 
 def test_soxl_profile_remains_weekday_session(tmp_path) -> None:

@@ -1,0 +1,8 @@
+data/*.db
+data/*.db-*
+data/raw/*.csv
+outputs/*.csv
+outputs/*.json
+outputs/*.html
+outputs/*.png
+notebooks/.ipynb_checkpoints/

@@ -35,6 +35,7 @@ def test_soxl_episode_is_0730_et_and_shared_marker_keeps_source_context(tmp_path
     assert liq["payload"]["anchor_timeframe"] == "30m"
     assert snapshot["clock"]["market_phase"] == "PREMARKET"
     assert snapshot["clock"]["source"].startswith("OKX")
+    assert snapshot["execution_price"] == 102.10
 
 
 def test_step_returns_incremental_chart_updates_without_full_snapshot(tmp_path: Path) -> None:
@@ -43,7 +44,20 @@ def test_step_returns_incremental_chart_updates_without_full_snapshot(tmp_path: 
     episode = app.create_episode({"symbol": "SOXL-USDT-SWAP", "mode": "specific", "start_date": "2026-06-02"})
     result = app.step(episode["id"], 2, ["30m", "15m", "2m", "1m"])
     assert result["episode"]["cursor_time"] == "2026-06-02 07:32:00"
+    assert result["execution_price"] == 102.12
     assert len(result["updates"]["1m"]) == 2
-    assert len(result["updates"]["2m"]) == 1
-    assert result["updates"]["15m"] == []
-    assert result["updates"]["30m"] == []
+    assert [(bar["time"], bar["is_partial"]) for bar in result["updates"]["2m"]] == [
+        ("2026-06-02 07:30:00", False),
+        ("2026-06-02 07:32:00", True),
+    ]
+    assert result["updates"]["15m"][-1]["is_partial"] is True
+    assert result["updates"]["30m"][-1]["is_partial"] is True
+
+
+def test_timeframe_sized_step_jumps_one_30m_bar(tmp_path: Path) -> None:
+    seed_soxl(tmp_path)
+    app = ReplayApplication(ReplayDataService(tmp_path), ReplayStore(tmp_path / "replay.sqlite3"))
+    episode = app.create_episode({"symbol": "SOXL-USDT-SWAP", "mode": "specific", "start_date": "2026-06-02"})
+    result = app.step(episode["id"], 30, ["30m"])
+    assert result["episode"]["cursor_time"] == "2026-06-02 08:00:00"
+    assert result["lifecycle_resolution"] == "timeframe_jump"

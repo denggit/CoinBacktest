@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import sqlite3
+import sys
 import threading
 import time
 from math import ceil
@@ -907,6 +908,21 @@ class _DashboardHTTPServer(ThreadingHTTPServer):
         self.logger = logger
         self.verbose = verbose
         super().__init__(server_address, handler)
+
+    def handle_error(self, request: object, client_address: tuple[str, int]) -> None:
+        """Silence expected browser disconnects without hiding server defects.
+
+        A browser can cancel a preconnected or keep-alive socket before an HTTP
+        request reaches ``do_GET``.  On Windows that commonly surfaces as
+        WinError 10053 from ``BaseHTTPRequestHandler.handle`` and therefore
+        cannot be caught by the SSE response loop.
+        """
+        error = sys.exc_info()[1]
+        if isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            if self.verbose:
+                self.logger.debug("[dashboard] client disconnected address=%s", client_address[0])
+            return
+        super().handle_error(request, client_address)
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):

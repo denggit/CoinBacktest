@@ -29,7 +29,7 @@ def test_replay_discovers_and_switches_local_okx_symbols(tmp_path):
     _write_symbol(tmp_path, "ETH-USDT-SWAP", 2500.0)
 
     service = ReplayDataService(tmp_path)
-    assert service.available_symbols()[:2] == ["SOXL-USDT-SWAP", "ETH-USDT-SWAP"]
+    assert set(service.available_symbols()[:2]) == {"SOXL-USDT-SWAP", "ETH-USDT-SWAP"}
 
     soxl = service.coverage("SOXL-USDT-SWAP")
     eth = service.coverage("ETH-USDT-SWAP")
@@ -37,7 +37,7 @@ def test_replay_discovers_and_switches_local_okx_symbols(tmp_path):
 
     cursor = service.cursor_for_date("ETH-USDT-SWAP", "2026-06-19")
     assert cursor == pd.Timestamp("2026-06-19 06:00:00")
-    assert service.session_profile("ETH-USDT-SWAP") == "crypto_24x7_until_bracket_exit"
+    assert service.session_profile("ETH-USDT-SWAP") == "crypto_24x7_continuous_replay"
     assert service.execution_open("ETH-USDT-SWAP", cursor) > 2000
     bars = service.candles("ETH-USDT-SWAP", "15m", cursor, 50).bars
     assert bars

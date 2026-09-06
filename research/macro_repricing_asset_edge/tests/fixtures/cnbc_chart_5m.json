@@ -1,0 +1,37 @@
+{
+  "data": {
+    "chartData": {
+      "symbol": "US2Y",
+      "timeRange": "5D",
+      "priceBars": [
+        {
+          "open": "4.2160",
+          "high": "4.2180",
+          "low": "4.2160",
+          "close": "4.2160",
+          "volume": "0",
+          "tradeTime": "20260827110800",
+          "tradeTimeinMills": "1787843280000"
+        },
+        {
+          "open": "4.2160",
+          "high": "4.2200",
+          "low": "4.2160",
+          "close": "4.2180",
+          "volume": "0",
+          "tradeTime": "20260827111300",
+          "tradeTimeinMills": "1787843580000"
+        },
+        {
+          "open": null,
+          "high": null,
+          "low": null,
+          "close": null,
+          "volume": null,
+          "tradeTime": null,
+          "tradeTimeinMills": null
+        }
+      ]
+    }
+  }
+}
